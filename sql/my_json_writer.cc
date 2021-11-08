@@ -97,6 +97,7 @@ void Json_writer::start_array()
 void Json_writer::end_object()
 {
 #ifndef NDEBUG
+  VALIDITY_ASSERT(named_item_expected());
   named_items_expectation.pop_back();
   VALIDITY_ASSERT(!got_name);
   got_name= false;
@@ -112,6 +113,7 @@ void Json_writer::end_object()
 void Json_writer::end_array()
 {
 #ifndef NDEBUG
+  VALIDITY_ASSERT(!named_item_expected());
   named_items_expectation.pop_back();
   got_name= false;
 #endif
