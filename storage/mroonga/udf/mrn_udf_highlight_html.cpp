@@ -1,6 +1,6 @@
 /* -*- c-basic-offset: 2; indent-tabs-mode: nil -*- */
 /*
-  Copyright(C) 2017 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2017-2019 Kouhei Sutou <kou@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -14,7 +14,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <mrn_mysql.h>
@@ -41,7 +41,7 @@ typedef struct st_mrn_highlight_html_info
   grn_obj *db;
   bool use_shared_db;
   grn_obj *keywords;
-  String result_str;
+  grn_obj result;
   struct {
     bool used;
     grn_obj *table;
@@ -49,7 +49,7 @@ typedef struct st_mrn_highlight_html_info
   } query_mode;
 } mrn_highlight_html_info;
 
-static my_bool mrn_highlight_html_prepare(mrn_highlight_html_info *info,
+static mrn_bool mrn_highlight_html_prepare(mrn_highlight_html_info *info,
                                           UDF_ARGS *args,
                                           char *message,
                                           grn_obj **keywords)
@@ -59,7 +59,6 @@ static my_bool mrn_highlight_html_prepare(mrn_highlight_html_info *info,
   grn_ctx *ctx = info->ctx;
   const char *normalizer_name = "NormalizerAuto";
   grn_obj *expr = NULL;
-  String *result_str = &(info->result_str);
 
   *keywords = NULL;
 
@@ -188,8 +187,8 @@ static my_bool mrn_highlight_html_prepare(mrn_highlight_html_info *info,
     }
   }
 
-  result_str->set_charset(system_charset_info);
-  DBUG_RETURN(FALSE);
+  GRN_BULK_REWIND(&(info->result));
+  DBUG_RETURN(false);
 
 error:
   if (expr) {
@@ -198,10 +197,10 @@ error:
   if (*keywords) {
     grn_obj_close(ctx, *keywords);
   }
-  DBUG_RETURN(TRUE);
+  DBUG_RETURN(true);
 }
 
-MRN_API my_bool mroonga_highlight_html_init(UDF_INIT *init,
+MRN_API mrn_bool mroonga_highlight_html_init(UDF_INIT *init,
                                             UDF_ARGS *args,
                                             char *message)
 {
@@ -286,21 +285,21 @@ MRN_API my_bool mroonga_highlight_html_init(UDF_INIT *init,
     }
   }
 
-  info->query_mode.used = FALSE;
+  info->query_mode.used = false;
 
   if (args->arg_count == 2 &&
       args->attribute_lengths[1] == strlen("query") &&
       strncmp(args->attributes[1], "query", strlen("query")) == 0) {
-    info->query_mode.used = TRUE;
+    info->query_mode.used = true;
     info->query_mode.table = NULL;
     info->query_mode.default_column = NULL;
   }
 
   {
-    bool all_keywords_are_constant = TRUE;
+    bool all_keywords_are_constant = true;
     for (unsigned int i = 1; i < args->arg_count; ++i) {
       if (!args->args[i]) {
-        all_keywords_are_constant = FALSE;
+        all_keywords_are_constant = false;
         break;
       }
     }
@@ -316,7 +315,7 @@ MRN_API my_bool mroonga_highlight_html_init(UDF_INIT *init,
 
   init->ptr = (char *)info;
 
-  DBUG_RETURN(FALSE);
+  DBUG_RETURN(false);
 
 error:
   if (info) {
@@ -326,20 +325,16 @@ error:
     mrn_context_pool->release(info->ctx);
     my_free(info);
   }
-  DBUG_RETURN(TRUE);
+  DBUG_RETURN(true);
 }
 
 static bool highlight_html(grn_ctx *ctx,
                            grn_pat *keywords,
                            const char *target,
                            size_t target_length,
-                           String *output)
+                           grn_obj *output)
 {
   MRN_DBUG_ENTER_FUNCTION();
-
-  grn_obj buffer;
-
-  GRN_TEXT_INIT(&buffer, 0);
 
   {
     const char *open_tag = "<span class=\"keyword\">";
@@ -362,23 +357,23 @@ static bool highlight_html(grn_ctx *ctx,
       for (int i = 0; i < n_hits; i++) {
         if ((hits[i].offset - previous) > 0) {
           grn_text_escape_xml(ctx,
-                              &buffer,
+                              output,
                               target + previous,
                               hits[i].offset - previous);
         }
-        GRN_TEXT_PUT(ctx, &buffer, open_tag, open_tag_length);
+        GRN_TEXT_PUT(ctx, output, open_tag, open_tag_length);
         grn_text_escape_xml(ctx,
-                            &buffer,
+                            output,
                             target + hits[i].offset,
                             hits[i].length);
-        GRN_TEXT_PUT(ctx, &buffer, close_tag, close_tag_length);
+        GRN_TEXT_PUT(ctx, output, close_tag, close_tag_length);
         previous = hits[i].offset + hits[i].length;
       }
 
       chunk_length = rest - target;
       if ((chunk_length - previous) > 0) {
         grn_text_escape_xml(ctx,
-                            &buffer,
+                            output,
                             target + previous,
                             target_length - previous);
       }
@@ -388,14 +383,6 @@ static bool highlight_html(grn_ctx *ctx,
     }
   }
 
-  if (output->reserve(GRN_TEXT_LEN(&buffer))) {
-    my_error(ER_OUT_OF_RESOURCES, MYF(0), HA_ERR_OUT_OF_MEM);
-    GRN_OBJ_FIN(ctx, &buffer);
-    DBUG_RETURN(false);
-  }
-
-  output->q_append(GRN_TEXT_VALUE(&buffer), GRN_TEXT_LEN(&buffer));
-  GRN_OBJ_FIN(ctx, &buffer);
   DBUG_RETURN(true);
 }
 
@@ -413,7 +400,6 @@ MRN_API char *mroonga_highlight_html(UDF_INIT *init,
 
   grn_ctx *ctx = info->ctx;
   grn_obj *keywords = info->keywords;
-  String *result_str = &(info->result_str);
 
   if (!args->args[0]) {
     *is_null = 1;
@@ -427,13 +413,13 @@ MRN_API char *mroonga_highlight_html(UDF_INIT *init,
   }
 
   *is_null = 0;
-  result_str->length(0);
+  GRN_BULK_REWIND(&(info->result));
 
   if (!highlight_html(ctx,
                       reinterpret_cast<grn_pat *>(keywords),
                       args->args[0],
                       args->lengths[0],
-                      result_str)) {
+                      &(info->result))) {
     goto error;
   }
 
@@ -446,8 +432,8 @@ MRN_API char *mroonga_highlight_html(UDF_INIT *init,
     }
   }
 
-  *length = result_str->length();
-  DBUG_RETURN((char *)result_str->ptr());
+  *length = GRN_TEXT_LEN(&(info->result));
+  DBUG_RETURN(GRN_TEXT_VALUE(&(info->result)));
 
 error:
   if (!info->keywords && keywords) {
@@ -481,7 +467,7 @@ MRN_API void mroonga_highlight_html_deinit(UDF_INIT *init)
       grn_obj_close(info->ctx, info->query_mode.table);
     }
   }
-  MRN_STRING_FREE(info->result_str);
+  GRN_OBJ_FIN(info->ctx, &(info->result));
   if (!info->use_shared_db) {
     grn_obj_close(info->ctx, info->db);
   }

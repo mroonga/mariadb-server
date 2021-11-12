@@ -1,7 +1,8 @@
 /* -*- c-basic-offset: 2 -*- */
 /*
-  Copyright(C) 2012-2015 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2012-2019 Kouhei Sutou <kou@clear-code.com>
   Copyright(C) 2013 Kentoku SHIBA
+  Copyright(C) 2020 Horimoto Yasuhiro <horimoto@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -15,7 +16,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <mrn_mysql.h>
@@ -25,6 +26,10 @@
 #include "mrn_smart_grn_obj.hpp"
 #include "mrn_time_converter.hpp"
 #include "mrn_value_decoder.hpp"
+
+#include <field.h>
+
+#include <cstring>
 
 // for debug
 #define MRN_CLASS_NAME "mrn::MultipleColumnKeyCodec"
@@ -95,7 +100,7 @@ namespace mrn {
       if (field->null_bit) {
         DBUG_PRINT("info", ("mroonga: field has null bit"));
         *current_grn_key = 0;
-        is_null = *current_mysql_key;
+        is_null = (current_mysql_key[0] != 0);
         current_mysql_key += 1;
         current_grn_key += 1;
         (*grn_key_length)++;
@@ -124,7 +129,7 @@ namespace mrn {
           Field_num *number_field = static_cast<Field_num *>(field);
           encode_number(current_mysql_key,
                         data_size,
-                        !number_field->unsigned_flag,
+                        !MRN_FIELD_IS_UNSIGNED(number_field),
                         current_grn_key);
         }
         break;
@@ -144,44 +149,55 @@ namespace mrn {
         break;
       case TYPE_DATETIME:
         {
-          long long int mysql_datetime;
+          long long int grn_time;
+          if (is_null) {
+            grn_time = 0;
+          } else {
+            long long int mysql_datetime;
 #ifdef WORDS_BIGENDIAN
-          if (field->table && field->table->s->db_low_byte_first) {
-            mysql_datetime = sint8korr(current_mysql_key);
-          } else
+            if (field->table && field->table->s->db_low_byte_first) {
+              mysql_datetime = sint8korr(current_mysql_key);
+            } else
 #endif
-          {
-            value_decoder::decode(&mysql_datetime, current_mysql_key);
+            {
+              value_decoder::decode(&mysql_datetime, current_mysql_key);
+            }
+            TimeConverter time_converter;
+            bool truncated;
+            grn_time =
+              time_converter.mysql_datetime_to_grn_time(mysql_datetime,
+                                                        &truncated);
           }
-          TimeConverter time_converter;
-          bool truncated;
-          long long int grn_time =
-            time_converter.mysql_datetime_to_grn_time(mysql_datetime,
-                                                      &truncated);
           encode_long_long_int(grn_time, current_grn_key);
         }
         break;
 #ifdef MRN_HAVE_MYSQL_TYPE_DATETIME2
       case TYPE_DATETIME2:
         {
-          Field_datetimef *datetimef_field =
-            static_cast<Field_datetimef *>(field);
-          long long int mysql_datetime_packed = is_null ? 0 :
-            my_datetime_packed_from_binary(current_mysql_key,
-                                           datetimef_field->decimals());
-          MYSQL_TIME mysql_time;
-          TIME_from_longlong_datetime_packed(&mysql_time, mysql_datetime_packed);
-          TimeConverter time_converter;
-          bool truncated;
-          long long int grn_time =
-            time_converter.mysql_time_to_grn_time(&mysql_time, &truncated);
+          long long int grn_time;
+          if (is_null) {
+            grn_time = 0;
+          } else {
+            Field_datetimef *datetimef_field =
+              static_cast<Field_datetimef *>(field);
+            long long int mysql_datetime_packed =
+              my_datetime_packed_from_binary(current_mysql_key,
+                                             datetimef_field->decimals());
+            MYSQL_TIME mysql_time;
+            TIME_from_longlong_datetime_packed(&mysql_time,
+                                               mysql_datetime_packed);
+            TimeConverter time_converter;
+            bool truncated;
+            grn_time =
+              time_converter.mysql_time_to_grn_time(&mysql_time, &truncated);
+          }
           grn_key_data_size = 8;
           encode_long_long_int(grn_time, current_grn_key);
         }
         break;
 #endif
       case TYPE_BYTE_SEQUENCE:
-        memcpy(current_grn_key, current_mysql_key, data_size);
+        grn_memcpy(current_grn_key, current_mysql_key, data_size);
         break;
       case TYPE_BYTE_REVERSE:
         encode_reverse(current_mysql_key, data_size, current_grn_key);
@@ -253,7 +269,7 @@ namespace mrn {
           Field_num *number_field = static_cast<Field_num *>(field);
           decode_number(current_grn_key,
                         grn_key_data_size,
-                        !number_field->unsigned_flag,
+                        !MRN_FIELD_IS_UNSIGNED(number_field),
                         current_mysql_key);
         }
         break;
@@ -290,11 +306,11 @@ namespace mrn {
           decode_long_long_int(current_grn_key, &grn_time);
           TimeConverter time_converter;
           MYSQL_TIME mysql_time;
-          mysql_time.neg = FALSE;
+          mysql_time.neg = false;
           mysql_time.time_type = MYSQL_TIMESTAMP_DATETIME;
           time_converter.grn_time_to_mysql_time(grn_time, &mysql_time);
           long long int mysql_datetime_packed =
-            TIME_to_longlong_datetime_packed(&mysql_time);
+            mrn_TIME_to_longlong_datetime_packed(mysql_time);
           my_datetime_packed_to_binary(mysql_datetime_packed,
                                        current_mysql_key,
                                        datetimef_field->decimals());
@@ -302,18 +318,18 @@ namespace mrn {
         break;
 #endif
       case TYPE_BYTE_SEQUENCE:
-        memcpy(current_mysql_key, current_grn_key, grn_key_data_size);
+        grn_memcpy(current_mysql_key, current_grn_key, grn_key_data_size);
         break;
       case TYPE_BYTE_REVERSE:
         decode_reverse(current_grn_key, grn_key_data_size, current_mysql_key);
         break;
       case TYPE_BYTE_BLOB:
-        memcpy(current_mysql_key,
-               current_grn_key + data_size,
-               HA_KEY_BLOB_LENGTH);
-        memcpy(current_mysql_key + HA_KEY_BLOB_LENGTH,
-               current_grn_key,
-               data_size);
+        grn_memcpy(current_mysql_key,
+                   current_grn_key + data_size,
+                   HA_KEY_BLOB_LENGTH);
+        grn_memcpy(current_mysql_key + HA_KEY_BLOB_LENGTH,
+                   current_grn_key,
+                   data_size);
         data_size += HA_KEY_BLOB_LENGTH;
         grn_key_data_size = data_size;
         break;
@@ -455,6 +471,14 @@ namespace mrn {
       *data_type = TYPE_BYTE_BLOB;
       *data_size = key_part->length;
       break;
+#ifdef MRN_HAVE_MYSQL_TYPE_VARCHAR_COMPRESSED
+    case MYSQL_TYPE_VARCHAR_COMPRESSED:
+      // TODO
+      DBUG_PRINT("info", ("mroonga: MYSQL_TYPE_VARCHAR_COMPRESSED"));
+      *data_type = TYPE_BYTE_BLOB;
+      *data_size = key_part->length;
+      break;
+#endif
     case MYSQL_TYPE_BIT:
       // TODO
       DBUG_PRINT("info", ("mroonga: MYSQL_TYPE_BIT"));
@@ -503,6 +527,9 @@ namespace mrn {
     case MYSQL_TYPE_MEDIUM_BLOB:
     case MYSQL_TYPE_LONG_BLOB:
     case MYSQL_TYPE_BLOB:
+#ifdef MRN_HAVE_MYSQL_TYPE_BLOB_COMPRESSED
+    case MYSQL_TYPE_BLOB_COMPRESSED:
+#endif
       // TODO
       DBUG_PRINT("info", ("mroonga: MYSQL_TYPE_BLOB"));
       *data_type = TYPE_BYTE_BLOB;
@@ -521,9 +548,6 @@ namespace mrn {
       *data_type = TYPE_BYTE_SEQUENCE;
       *data_size = key_part->length;
       break;
-    case MYSQL_TYPE_VARCHAR_COMPRESSED:
-    case MYSQL_TYPE_BLOB_COMPRESSED:
-      DBUG_ASSERT(0);
 #ifdef MRN_HAVE_MYSQL_TYPE_JSON
     case MYSQL_TYPE_JSON:
       // TODO
@@ -554,7 +578,7 @@ namespace mrn {
                                              uchar *mysql_key) {
     MRN_DBUG_ENTER_METHOD();
     uchar buffer[8];
-    memcpy(buffer, grn_key, grn_key_size);
+    grn_memcpy(buffer, grn_key, grn_key_size);
     if (is_signed) {
       buffer[0] ^= 0x80;
     }
@@ -576,7 +600,7 @@ namespace mrn {
     MRN_DBUG_ENTER_METHOD();
     uint grn_key_size = 8;
     uchar buffer[8];
-    memcpy(buffer, grn_key, grn_key_size);
+    grn_memcpy(buffer, grn_key, grn_key_size);
     buffer[0] ^= 0x80;
     mrn_byte_order_network_to_host(value, buffer, grn_key_size);
     DBUG_VOID_RETURN;
@@ -675,11 +699,13 @@ namespace mrn {
                                 &normalized, &normalized_length, NULL);
       uint16 new_blob_data_length;
       if (normalized_length <= UINT_MAX16) {
-        if (normalized_length)
-          memcpy(grn_key, normalized, normalized_length);
+        if (normalized_length > 0) {
+          grn_memcpy(grn_key, normalized, normalized_length);
+        }
         if (normalized_length < *mysql_key_size) {
           memset(grn_key + normalized_length,
-                 '\0', *mysql_key_size - normalized_length);
+                 '\0',
+                 *mysql_key_size - normalized_length);
         }
         new_blob_data_length = normalized_length;
       } else {
@@ -696,15 +722,15 @@ namespace mrn {
                             UINT_MAX16,
                             field->field_name,
                             blob_data_length, blob_data);
-        memcpy(grn_key, normalized, blob_data_length);
+        grn_memcpy(grn_key, normalized, blob_data_length);
         new_blob_data_length = blob_data_length;
       }
-      memcpy(grn_key + *mysql_key_size,
-             &new_blob_data_length,
-             HA_KEY_BLOB_LENGTH);
+      grn_memcpy(grn_key + *mysql_key_size,
+                 &new_blob_data_length,
+                 HA_KEY_BLOB_LENGTH);
     } else {
-      memcpy(grn_key + *mysql_key_size, mysql_key, HA_KEY_BLOB_LENGTH);
-      memcpy(grn_key, mysql_key + HA_KEY_BLOB_LENGTH, *mysql_key_size);
+      grn_memcpy(grn_key + *mysql_key_size, mysql_key, HA_KEY_BLOB_LENGTH);
+      grn_memcpy(grn_key, mysql_key + HA_KEY_BLOB_LENGTH, *mysql_key_size);
     }
     *mysql_key_size += HA_KEY_BLOB_LENGTH;
     DBUG_VOID_RETURN;

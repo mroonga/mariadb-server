@@ -1,7 +1,7 @@
 /* -*- c-basic-offset: 2 -*- */
 /*
   Copyright(C) 2011-2013 Kentoku SHIBA
-  Copyright(C) 2011-2015 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2011-2019 Kouhei Sutou <kou@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -15,7 +15,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #ifndef MRN_TABLE_HPP_
@@ -49,8 +49,12 @@ typedef struct st_mroonga_share
   TABLE_SHARE         *wrap_table_share;
   MRN_LONG_TERM_SHARE *long_term_share;
 
+  char                *table_flags;
+  int                 table_flags_length;
   char                *engine;
   int                 engine_length;
+  char                *tokenizer;
+  int                 tokenizer_length;
   char                *default_tokenizer;
   int                 default_tokenizer_length;
   char                *normalizer;
@@ -59,12 +63,8 @@ typedef struct st_mroonga_share
   int                 token_filters_length;
   plugin_ref          plugin;
   handlerton          *hton;
-  char                **index_table;
-  char                **key_tokenizer;
   char                **col_flags;
   char                **col_type;
-  uint                *index_table_length;
-  uint                *key_tokenizer_length;
   uint                *col_flags_length;
   uint                *col_type_length;
   uint                *wrap_key_nr;
@@ -96,8 +96,7 @@ struct st_mrn_slot_data
 };
 
 #define MRN_SET_WRAP_ALTER_KEY(file, ha_alter_info) \
-  alter_table_operations base_handler_flags = ha_alter_info->handler_flags; \
-  ha_table_option_struct* base_option_struct = ha_alter_info->create_info->option_struct; \
+  mrn_alter_flags base_handler_flags = ha_alter_info->handler_flags; \
   KEY  *base_key_info_buffer = ha_alter_info->key_info_buffer; \
   uint base_key_count = ha_alter_info->key_count; \
   uint base_index_drop_count = ha_alter_info->index_drop_count; \
@@ -105,7 +104,6 @@ struct st_mrn_slot_data
   uint base_index_add_count = ha_alter_info->index_add_count; \
   uint *base_index_add_buffer = ha_alter_info->index_add_buffer; \
   ha_alter_info->handler_flags = file->alter_handler_flags; \
-  ha_alter_info->create_info->option_struct = wrap_altered_table->s->option_struct; \
   ha_alter_info->key_info_buffer = file->alter_key_info_buffer; \
   ha_alter_info->key_count = file->alter_key_count; \
   ha_alter_info->index_drop_count = file->alter_index_drop_count; \
@@ -115,7 +113,6 @@ struct st_mrn_slot_data
 
 #define MRN_SET_BASE_ALTER_KEY(share, table_share) \
   ha_alter_info->handler_flags = base_handler_flags; \
-  ha_alter_info->create_info->option_struct = base_option_struct; \
   ha_alter_info->key_info_buffer = base_key_info_buffer; \
   ha_alter_info->key_count = base_key_count; \
   ha_alter_info->index_drop_count = base_index_drop_count; \
@@ -152,8 +149,6 @@ void mrn_get_partition_info(const char *table_name, uint table_name_length,
 #endif
 int mrn_parse_table_param(MRN_SHARE *share, TABLE *table);
 bool mrn_is_geo_key(const KEY *key_info);
-int mrn_add_index_param(MRN_SHARE *share, KEY *key_info, int i);
-int mrn_parse_index_param(MRN_SHARE *share, TABLE *table);
 int mrn_add_column_param(MRN_SHARE *share, Field *field, int i);
 int mrn_parse_column_param(MRN_SHARE *share, TABLE *table);
 MRN_SHARE *mrn_get_share(const char *table_name, TABLE *table, int *error);
@@ -164,7 +159,11 @@ MRN_LONG_TERM_SHARE *mrn_get_long_term_share(const char *table_name,
                                              int *error);
 void mrn_free_long_term_share(MRN_LONG_TERM_SHARE *long_term_share);
 TABLE_SHARE *mrn_get_table_share(TABLE_LIST *table_list, int *error);
-TABLE_SHARE *mrn_create_tmp_table_share(TABLE_LIST *table_list, const char *path,
+TABLE_SHARE *mrn_create_tmp_table_share(TABLE_LIST *table_list,
+                                        const char *path,
+#ifdef MRN_OPEN_TABLE_DEF_USE_TABLE_DEFINITION
+                                        const dd::Table *table_def,
+#endif
                                         int *error);
 void mrn_free_tmp_table_share(TABLE_SHARE *table_share);
 KEY *mrn_create_key_info_for_table(MRN_SHARE *share, TABLE *table, int *error);

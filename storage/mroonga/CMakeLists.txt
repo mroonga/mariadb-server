@@ -1,7 +1,7 @@
 # -*- indent-tabs-mode: nil -*-
 #
-# Copyright(C) 2012-2015 Kouhei Sutou <kou@clear-code.com>
-# Copyright(C) 2013 Kentoku SHIBA
+# Copyright(C) 2012-2021  Sutou Kouhei <kou@clear-code.com>
+# Copyright(C) 2013  Kentoku SHIBA
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -15,7 +15,7 @@
 #
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
 cmake_minimum_required(VERSION 2.8.12)
 project(mroonga)
@@ -64,15 +64,11 @@ set(MRN_BUNDLED_GROONGA_DIR
   "${CMAKE_CURRENT_SOURCE_DIR}/${MRN_BUNDLED_GROONGA_RELATIVE_DIR}")
 if(EXISTS "${MRN_BUNDLED_GROONGA_DIR}")
   set(MRN_GROONGA_BUNDLED TRUE)
-  if(MSVC)
-    # Bundled Mroonga does not support MSVC yet
-    return()
-  endif()
 else()
   set(MRN_GROONGA_BUNDLED FALSE)
 endif()
 
-set(MRN_PLUGIN_SUFFIX ${CMAKE_SHARED_LIBRARY_SUFFIX})
+set(MRN_PLUGIN_SUFFIX ${CMAKE_SHARED_MODULE_SUFFIX})
 
 if(MRN_BUNDLED)
   set(MRN_SOURCE_DIR ${CMAKE_SOURCE_DIR}/storage/mroonga)
@@ -80,7 +76,7 @@ else()
   set(MRN_SOURCE_DIR ${CMAKE_SOURCE_DIR})
 endif()
 
-file(READ ${MRN_SOURCE_DIR}/version_full   MRN_VERSION)
+file(READ ${MRN_SOURCE_DIR}/version_full   MRN_VERSION_FULL)
 file(READ ${MRN_SOURCE_DIR}/version_major  MRN_VERSION_MAJOR)
 file(READ ${MRN_SOURCE_DIR}/version_minor  MRN_VERSION_MINOR)
 file(READ ${MRN_SOURCE_DIR}/version_micro  MRN_VERSION_MICRO)
@@ -110,20 +106,6 @@ if(MRN_GROONGA_BUNDLED)
     set(GROONGA_NORMALIZER_MYSQL_EMBED ON)
   endif()
 
-  file(READ "${MRN_BUNDLED_GROONGA_DIR}/bundled_lz4_version"
-    MRN_BUNDLED_LZ4_VERSION)
-  string(STRIP
-    "${MRN_BUNDLED_LZ4_VERSION}"
-    MRN_BUNDLED_LZ4_VERSION)
-  set(MRN_BUNDLED_LZ4_DIR
-    "${MRN_BUNDLED_GROONGA_DIR}/vendor/lz4-${MRN_BUNDLED_LZ4_VERSION}")
-  if(EXISTS ${MRN_BUNDLED_LZ4_DIR})
-    set(GRN_WITH_BUNDLED_LZ4 ON)
-    set(GRN_WITH_LZ4 "yes")
-  else()
-    set(GRN_WITH_LZ4 "no")
-  endif()
-
   add_subdirectory("${MRN_BUNDLED_GROONGA_RELATIVE_DIR}")
 else()
   set(MRN_GROONGA_EMBED OFF)
@@ -139,7 +121,7 @@ else()
     REQUIRED_GROONGA_NORMALIZER_MYSQL_VERSION)
 endif()
 
-set(MRN_PACKAGE_STRING "${PROJECT_NAME} ${MRN_VERSION}")
+set(MRN_PACKAGE_STRING "${PROJECT_NAME} ${MRN_VERSION_FULL}")
 
 include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
@@ -147,6 +129,31 @@ include(${MRN_SOURCE_DIR}/build/cmake_modules/ReadFileList.cmake)
 
 set(MRN_C_COMPILE_FLAGS "")
 set(MRN_CXX_COMPILE_FLAGS "")
+
+macro(mrn_check_cflag flag)
+  string(REGEX REPLACE "[-=]" "_" temporary_variable_name ${flag})
+  string(TOUPPER "${temporary_variable_name}" temporary_variable_name)
+  set(temporary_variable_name "CFLAG${temporary_variable_name}")
+  check_c_compiler_flag(${flag} ${temporary_variable_name})
+  if(${temporary_variable_name})
+    set(MRN_C_COMPILE_FLAGS "${MRN_C_COMPILE_FLAGS} ${flag}")
+  endif()
+endmacro()
+
+macro(mrn_check_cxxflag flag)
+  string(REGEX REPLACE "[-=]" "_" temporary_variable_name ${flag})
+  string(TOUPPER "${temporary_variable_name}" temporary_variable_name)
+  set(temporary_variable_name "CXXFLAG${temporary_variable_name}")
+  check_cxx_compiler_flag(${flag} ${temporary_variable_name})
+  if(${temporary_variable_name})
+    set(MRN_CXX_COMPILE_FLAGS "${MRN_CXX_COMPILE_FLAGS} ${flag}")
+  endif()
+endmacro()
+
+macro(mrn_build_flag flag)
+  mrn_check_cflag(${flag})
+  mrn_check_cxxflag(${flag})
+endmacro()
 
 if(MRN_BUNDLED)
   set(MRN_RELATIVE_DIR_PREFIX "${MRN_SOURCE_DIR}/")
@@ -189,7 +196,24 @@ else()
   set(MYSQL_VARIANT "MySQL")
 endif()
 
-set(MYSQL_REGEX_INCLUDE_DIR "${MYSQL_SOURCE_DIR}/regex")
+if(EXISTS "${MYSQL_SOURCE_DIR}/wsrep-lib")
+  set(MYSQL_WSREP_INCLUDE_DIR "${MYSQL_SOURCE_DIR}/wsrep-lib/include")
+  file(GLOB
+    MYSQL_WSREP_API_H
+    "${MYSQL_SOURCE_DIR}/wsrep-lib/wsrep-API/*/wsrep_api.h")
+  get_filename_component(MYSQL_WSREP_API_INCLUDE_DIR
+    "${MYSQL_WSREP_API_H}"
+    DIRECTORY)
+else()
+  set(MYSQL_WSREP_INCLUDE_DIR)
+  set(MYSQL_WSREP_API_INCLUDE_DIR)
+endif()
+
+if(EXISTS "${MYSQL_SOURCE_DIR}/pcre")
+  set(MYSQL_REGEX_INCLUDE_DIR "${MYSQL_SOURCE_DIR}/pcre")
+else()
+  set(MYSQL_REGEX_INCLUDE_DIR "${MYSQL_SOURCE_DIR}/regex")
+endif()
 
 if(EXISTS "${MYSQL_SOURCE_DIR}/extra/rapidjson")
   set(MYSQL_RAPIDJSON_INCLUDE_DIR "${MYSQL_SOURCE_DIR}/extra/rapidjson/include")
@@ -208,18 +232,33 @@ else()
   set(MYSQL_LIBBINLOGEVENTS_INCLUDE_DIR)
 endif()
 
+if(EXISTS "${MYSQL_BUILD_DIR}/extra/protobuf/protobuf-3.11.4")
+  set(MYSQL_PROTOBUF_INCLUDE_DIR
+    "${MYSQL_SOURCE_DIR}/extra/protobuf/protobuf-3.11.4/src")
+else()
+  set(MYSQL_PROTOBUF_INCLUDE_DIR)
+endif()
+
 set(MYSQL_INCLUDE_DIRS
   "${MYSQL_BUILD_DIR}/include"
   "${MYSQL_SOURCE_DIR}/sql"
   "${MYSQL_SOURCE_DIR}/include"
+  "${MYSQL_WSREP_INCLUDE_DIR}"
+  "${MYSQL_WSREP_API_INCLUDE_DIR}"
   "${MYSQL_REGEX_INCLUDE_DIR}"
   "${MYSQL_RAPIDJSON_INCLUDE_DIR}"
   "${MYSQL_LIBBINLOGEVENTS_EXPORT_DIR}"
-  "${MYSQL_LIBBINLOGEVENTS_INCLUDE_DIR}")
+  "${MYSQL_LIBBINLOGEVENTS_INCLUDE_DIR}"
+  "${MYSQL_PROTOBUF_INCLUDE_DIR}"
+  "${MYSQL_SOURCE_DIR}")
+
+if(NOT MRN_BUNDLED AND APPLE)
+  # This assumes that MySQL is installed by Homebrew.
+  list(APPEND MYSQL_INCLUDE_DIRS "/usr/local/opt/openssl/include")
+endif()
 
 if(MRN_BUNDLED)
   set(MYSQL_PLUGIN_DIR "${INSTALL_PLUGINDIR}")
-  set(MYSQL_SERVICES_LIB_DIR "${MYSQL_BUILD_DIR}/libservices")
   set(MYSQL_CFLAGS "${CMAKE_C_FLAGS}")
   set(MYSQL_VERSION "${MYSQL_BASE_VERSION}")
 else()
@@ -233,31 +272,47 @@ else()
 
   set_mysql_config_value("--plugindir" MYSQL_PLUGIN_DIR)
   set_mysql_config_value("--variable=pkglibdir" MYSQL_PKG_LIB_DIR)
-  set(MYSQL_BUILD_LIBSERVICES_DIR "${MYSQL_BUILD_DIR}/libservices")
-  if(EXISTS "${MYSQL_BUILD_LIBSERVICES_DIR}/libmysqlservices.a")
-    set(MYSQL_SERVICES_LIB_DIR "${MYSQL_BUILD_LIBSERVICES_DIR}")
-  else()
-    set(MYSQL_SERVICES_LIB_DIR "${MYSQL_PKG_LIB_DIR}")
+  set(MYSQL_SERVICES_LIB_STATIC
+    "${MYSQL_BUILD_DIR}/archive_output_directory/libmysqlservices.a")
+  if(NOT EXISTS "${MYSQL_SERVICES_LIB_STATIC}")
+    set(MYSQL_SERVICES_LIB_STATIC
+      "${MYSQL_BUILD_DIR}/libservices/libmysqlservices.a")
+  endif()
+  if(NOT EXISTS "${MYSQL_SERVICES_LIB_STATIC}")
+    set(MYSQL_SERVICES_LIB_STATIC "${MYSQL_PKG_LIB_DIR}/libmysqlservices.a")
+  endif()
+  set(PERFSCHEMA_LIB_STATIC
+    "${MYSQL_BUILD_DIR}/storage/perfschema/libperfschema.a")
+  if(NOT EXISTS "${PERFSCHEMA_LIB_STATIC}")
+    set(PERFSCHEMA_LIB_STATIC "${MYSQL_PKG_LIB_DIR}/libperfschema.a")
   endif()
   set_mysql_config_value("--cflags" MYSQL_CFLAGS)
   set_mysql_config_value("--version" MYSQL_VERSION)
+  if(${MYSQL_VERSION} VERSION_GREATER "7")
+    set(CMAKE_CXX_STANDARD 11)
+    set(CMAKE_CXX_STANDARD_REQURED TRUE)
+  endif()
 endif()
 
-if(${MYSQL_VERSION} VERSION_LESS "5.5.0")
-  message(FATAL_ERROR
-    "Mroonga doesn't support MySQL < 5.5.0: <${MYSQL_VERSION}>")
-  return()
-endif()
-
-if(${MYSQL_VERSION} VERSION_GREATER "10.0.0" AND
-   ${MYSQL_VERSION} VERSION_LESS "10.0.9")
-  message(FATAL_ERROR
-    "Mroonga doesn't support MariaDB 10.0.0-10.0.8: <${MYSQL_VERSION}>")
-  return()
+if(${MYSQL_VARIANT} STREQUAL "MariaDB")
+  if(${MYSQL_VERSION} VERSION_LESS "10.4")
+  else()
+    set(CMAKE_CXX_STANDARD 11)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  endif()
+else()
+  if(${MYSQL_VERSION} VERSION_LESS "8.0")
+    set(CMAKE_CXX_STANDARD 11)
+  else()
+    set(CMAKE_CXX_STANDARD 17)
+  endif()
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
 endif()
 
 if(MRN_GROONGA_BUNDLED)
-  set(GROONGA_INCLUDE_DIRS "${MRN_BUNDLED_GROONGA_DIR}/include")
+  set(GROONGA_INCLUDE_DIRS
+    "${MRN_BUNDLED_GROONGA_DIR}/include"
+    "${CMAKE_CURRENT_BINARY_DIR}/${MRN_BUNDLED_GROONGA_RELATIVE_DIR}/include")
   set(GROONGA_LIBRARY_DIRS "${MRN_BUNDLED_GROONGA_DIR}/lib")
   set(GROONGA_LIBRARIES "libgroonga")
 
@@ -291,9 +346,6 @@ if(WIN32)
   set(MYSQL_LIBRARY_DIRS
     "${MYSQL_BUILD_DIR}/lib"
     "${MYSQL_BUILD_DIR}/libmysqld")
-else()
-  set(MYSQL_LIBRARY_DIRS
-    "${MYSQL_SERVICES_LIB_DIR}")
 endif()
 link_directories(
   ${MRN_LIBRARY_DIRS}
@@ -316,20 +368,38 @@ if(MRN_BUNDLED)
 else()
   add_library(mroonga MODULE ${MRN_ALL_SOURCES})
 
-  set(MYSQL_LIBRARIES "mysqlservices")
-  target_link_libraries(mroonga ${GROONGA_LIBRARIES} ${MYSQL_LIBRARIES})
+  if(NOT WIN32)
+    set(MRN_LIBRARIES ${MRN_LIBRARIES} ${MYSQL_SERVICES_LIB_STATIC})
+    if(${MYSQL_VERSION} VERSION_GREATER "10.5.0")
+      set(MRN_LIBRARIES ${MRN_LIBRARIES} ${PERFSCHEMA_LIB_STATIC})
+    endif()
+  endif()
+  if(APPLE)
+    # Need to use -bundle_loader to resolve symbols by mysqld executable.
+    set(MYSQLD "mysqld" CACHE PATH "Path to mysqld executable")
+    find_program(MYSQLD_ABSOLUTE ${MYSQLD} REQUIRED)
+    add_executable(mysqld IMPORTED)
+    set_property(TARGET mysqld PROPERTY IMPORTED_LOCATION ${MYSQLD_ABSOLUTE})
+    set_property(TARGET mysqld PROPERTY ENABLE_EXPORTS TRUE)
+    list(APPEND MRN_LIBRARIES mysqld)
+  endif()
+  target_link_libraries(mroonga ${MRN_LIBRARIES})
 
   option(WITH_DEBUG "Enable debug options" OFF)
   if(WITH_DEBUG)
     set_property(TARGET mroonga APPEND PROPERTY
       COMPILE_DEFINITIONS "SAFE_MUTEX")
+    if(${MYSQL_VARIANT} STREQUAL "MariaDB")
+      set_property(TARGET mroonga APPEND PROPERTY
+        COMPILE_DEFINITIONS "DBUG_TRACE")
+    endif()
     if(CMAKE_COMPILER_IS_GNUCXX)
       set(MRN_C_COMPILE_FLAGS "${MRN_C_COMPILE_FLAGS} -g3 -O0")
       set(MRN_CXX_COMPILE_FLAGS "${MRN_CXX_COMPILE_FLAGS} -g3 -O0")
     endif()
   else()
     set_property(TARGET mroonga APPEND PROPERTY
-      COMPILE_DEFINITIONS "DBUG_OFF")
+      COMPILE_DEFINITIONS "NDEBUG" "DBUG_OFF")
   endif()
 
   option(WITH_DEBUG_FULL "Enable full debug options" OFF)
@@ -351,14 +421,16 @@ else()
   endif()
 
   if(CMAKE_COMPILER_IS_GNUCXX)
-    MY_CHECK_AND_SET_COMPILER_FLAG("-Wall")
-    MY_CHECK_AND_SET_COMPILER_FLAG("-Wextra")
-    MY_CHECK_AND_SET_COMPILER_FLAG("-Wno-unused-parameter")
-    MY_CHECK_AND_SET_COMPILER_FLAG("-Wno-strict-aliasing")
-    MY_CHECK_AND_SET_COMPILER_FLAG("-Wno-deprecated")
-    MY_CHECK_AND_SET_COMPILER_FLAG("-fno-exceptions")
-    MY_CHECK_AND_SET_COMPILER_FLAG("-felide-constructors")
-    MY_CHECK_AND_SET_COMPILER_FLAG("-Wno-implicit-fallthrough")
+    mrn_build_flag("-Wall")
+    mrn_build_flag("-Wextra")
+    mrn_build_flag("-Wno-unused-parameter")
+    mrn_build_flag("-Wno-strict-aliasing")
+    mrn_build_flag("-Wno-deprecated")
+    mrn_check_cxxflag("-felide-constructors")
+    if("${MYSQL_VARIANT}" STREQUAL "MariaDB" AND
+        "${MYSQL_VERSION}" VERSION_LESS "10.4.0")
+      mrn_check_cxxflag("-fno-rtti")
+    endif()
   endif()
   set_source_files_properties(${MRN_SOURCES} PROPERTIES
     COMPILE_FLAGS "${MYSQL_CFLAGS} ${MRN_CXX_COMPILE_FLAGS}")
@@ -427,12 +499,12 @@ if(NOT EXISTS "${MRN_TEST_SUITE_DIR}")
   set(MRN_TEST_SUITE_DIR "${PROJECT_SOURCE_DIR}/mysql-test/mroonga")
 endif()
 configure_file(
-  "${MRN_TEST_SUITE_DIR}/storage/r/information_schema_plugins.result.in"
-  "${MRN_TEST_SUITE_DIR}/storage/r/information_schema_plugins.result"
+  "${MRN_TEST_SUITE_DIR}/storage/information_schema/r/plugins.result.in"
+  "${MRN_TEST_SUITE_DIR}/storage/information_schema/r/plugins.result"
   NEWLINE_STYLE LF)
 configure_file(
-  "${MRN_TEST_SUITE_DIR}/storage/r/variable_version.result.in"
-  "${MRN_TEST_SUITE_DIR}/storage/r/variable_version.result"
+  "${MRN_TEST_SUITE_DIR}/storage/variable/r/version.result.in"
+  "${MRN_TEST_SUITE_DIR}/storage/variable/r/version.result"
   NEWLINE_STYLE LF)
 
 configure_file(
@@ -450,3 +522,8 @@ install(FILES
   "${PROJECT_BINARY_DIR}/data/install.sql"
   "${PROJECT_SOURCE_DIR}/data/uninstall.sql"
   DESTINATION "${MRN_DATA_DIR}/")
+if(MSVC AND CMAKE_VERSION VERSION_GREATER "3.1")
+  install(FILES $<TARGET_PDB_FILE:mroonga>
+    DESTINATION "${MYSQL_PLUGIN_DIR}"
+    OPTIONAL)
+endif()

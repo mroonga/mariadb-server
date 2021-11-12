@@ -2,7 +2,7 @@
 /*
   Copyright(C) 2010 Tetsuro IKEDA
   Copyright(C) 2010-2013 Kentoku SHIBA
-  Copyright(C) 2011-2017 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2011-2019 Kouhei Sutou <kou@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -16,7 +16,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <mrn_mysql.h>
@@ -42,10 +42,10 @@ struct CommandInfo
   grn_obj *db;
   bool use_shared_db;
   grn_obj command;
-  String result;
+  grn_obj result;
 };
 
-MRN_API my_bool mroonga_command_init(UDF_INIT *init, UDF_ARGS *args,
+MRN_API mrn_bool mroonga_command_init(UDF_INIT *init, UDF_ARGS *args,
                                      char *message)
 {
   CommandInfo *info = NULL;
@@ -155,10 +155,11 @@ MRN_API my_bool mroonga_command_init(UDF_INIT *init, UDF_ARGS *args,
     }
   }
   GRN_TEXT_INIT(&(info->command), 0);
+  GRN_TEXT_INIT(&(info->result), 0);
 
   init->ptr = (char *)info;
 
-  return FALSE;
+  return false;
 
 error:
   if (info) {
@@ -168,7 +169,7 @@ error:
     mrn_context_pool->release(info->ctx);
     my_free(info);
   }
-  return TRUE;
+  return true;
 }
 
 static void mroonga_command_escape_value(grn_ctx *ctx,
@@ -251,7 +252,7 @@ MRN_API char *mroonga_command(UDF_INIT *init, UDF_ARGS *args, char *result,
     goto error;
   }
 
-  info->result.length(0);
+  GRN_BULK_REWIND(&(info->result));
   do {
     char *buffer;
     unsigned int buffer_length;
@@ -261,16 +262,12 @@ MRN_API char *mroonga_command(UDF_INIT *init, UDF_ARGS *args, char *result,
       goto error;
     }
     if (buffer_length > 0) {
-      if (info->result.reserve(buffer_length)) {
-        my_error(ER_OUT_OF_RESOURCES, MYF(0), HA_ERR_OUT_OF_MEM);
-        goto error;
-      }
-      info->result.q_append(buffer, buffer_length);
+      GRN_TEXT_PUT(ctx, &(info->result), buffer, buffer_length);
     }
   } while (flags & GRN_CTX_MORE);
 
-  *length = info->result.length();
-  return (char *)(info->result.ptr());
+  *length = GRN_TEXT_LEN(&(info->result));
+  return GRN_TEXT_VALUE(&(info->result));
 
 error:
   *error = 1;
@@ -281,12 +278,12 @@ MRN_API void mroonga_command_deinit(UDF_INIT *init)
 {
   CommandInfo *info = (CommandInfo *)init->ptr;
   if (info) {
+    GRN_OBJ_FIN(info->ctx, &(info->result));
     GRN_OBJ_FIN(info->ctx, &(info->command));
     if (!info->use_shared_db) {
       grn_obj_close(info->ctx, info->db);
     }
     mrn_context_pool->release(info->ctx);
-    MRN_STRING_FREE(info->result);
     my_free(info);
   }
 }

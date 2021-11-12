@@ -14,7 +14,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #ifndef MRN_COUNT_SKIP_CHECKER_HPP_
@@ -31,7 +31,7 @@ namespace mrn {
   public:
     CountSkipChecker(grn_ctx *ctx,
                      TABLE *table,
-                     SELECT_LEX *select_lex,
+                     mrn_query_block *query_block,
                      KEY *key_info,
                      key_part_map target_key_part_map,
                      bool is_storage_mode);
@@ -42,7 +42,7 @@ namespace mrn {
   private:
     grn_ctx *ctx_;
     TABLE *table_;
-    SELECT_LEX *select_lex_;
+    mrn_query_block *query_block_;
     KEY *key_info_;
     key_part_map target_key_part_map_;
     bool is_storage_mode_;

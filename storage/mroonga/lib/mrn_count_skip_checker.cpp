@@ -2,6 +2,7 @@
 /*
   Copyright(C) 2010-2013 Kentoku SHIBA
   Copyright(C) 2011-2017 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2020 Horimoto Yasuhiro <horimoto@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -15,7 +16,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include "mrn_count_skip_checker.hpp"
@@ -28,13 +29,13 @@
 namespace mrn {
   CountSkipChecker::CountSkipChecker(grn_ctx *ctx,
                                      TABLE *table,
-                                     SELECT_LEX *select_lex,
+                                     mrn_query_block *query_block,
                                      KEY *key_info,
                                      key_part_map target_key_part_map,
                                      bool is_storage_mode)
     : ctx_(ctx),
       table_(table),
-      select_lex_(select_lex),
+      query_block_(query_block),
       key_info_(key_info),
       target_key_part_map_(target_key_part_map),
       is_storage_mode_(is_storage_mode) {
@@ -46,31 +47,37 @@ namespace mrn {
   bool CountSkipChecker::check() {
     MRN_DBUG_ENTER_METHOD();
 
-    if (select_lex_->item_list.elements != 1) {
+    if (MRN_QUERY_BLOCK_GET_NUM_VISIBLE_FIELDS(query_block_) != 1) {
       GRN_LOG(ctx_, GRN_LOG_DEBUG,
               "[mroonga][count-skip][false] not only one item: %u",
-              select_lex_->item_list.elements);
+              MRN_QUERY_BLOCK_GET_NUM_VISIBLE_FIELDS(query_block_));
       DBUG_RETURN(false);
     }
-    if (select_lex_->group_list.elements > 0) {
+    if (query_block_->group_list.elements > 0) {
       GRN_LOG(ctx_, GRN_LOG_DEBUG,
               "[mroonga][count-skip][false] have groups: %u",
-              select_lex_->group_list.elements);
+              query_block_->group_list.elements);
       DBUG_RETURN(false);
     }
-    if (MRN_SELECT_LEX_GET_HAVING_COND(select_lex_)) {
+    if (MRN_QUERY_BLOCK_GET_HAVING_COND(query_block_)) {
       GRN_LOG(ctx_, GRN_LOG_DEBUG,
               "[mroonga][count-skip][false] have HAVING");
       DBUG_RETURN(false);
     }
-    if (select_lex_->table_list.elements != 1) {
+    if (MRN_LIST_SIZE(query_block_->join_list) != 1) {
+      GRN_LOG(ctx_, GRN_LOG_DEBUG,
+              "[mroonga][count-skip][false] have JOINs: %u",
+              static_cast<uint32_t>(MRN_LIST_SIZE(query_block_->join_list)));
+      DBUG_RETURN(false);
+    }
+    if (query_block_->table_list.elements != 1) {
       GRN_LOG(ctx_, GRN_LOG_DEBUG,
               "[mroonga][count-skip][false] not only one table: %u",
-              select_lex_->table_list.elements);
+              query_block_->table_list.elements);
       DBUG_RETURN(false);
     }
 
-    Item *info = static_cast<Item *>(select_lex_->item_list.first_node()->info);
+    Item *info = MRN_QUERY_BLOCK_GET_FIRST_VISIBLE_FIELD(query_block_);
     if (info->type() != Item::SUM_FUNC_ITEM) {
       GRN_LOG(ctx_, GRN_LOG_DEBUG,
               "[mroonga][count-skip][false] item isn't sum function: %u",
@@ -97,7 +104,7 @@ namespace mrn {
       DBUG_RETURN(false);
     }
 
-    Item *where = MRN_SELECT_LEX_GET_WHERE_COND(select_lex_);
+    Item *where = MRN_QUERY_BLOCK_GET_WHERE_COND(query_block_);
     if (!where) {
       if (is_storage_mode_) {
         GRN_LOG(ctx_, GRN_LOG_DEBUG,
@@ -133,18 +140,10 @@ namespace mrn {
       {
         Item_func *func_item = static_cast<Item_func *>(where);
         if (func_item->functype() == Item_func::FT_FUNC) {
-          if (select_lex_->select_n_where_fields == 1) {
-            GRN_LOG(ctx_, GRN_LOG_DEBUG,
-                    "[mroonga][count-skip][true] "
-                    "only one full text search condition");
-            DBUG_RETURN(true);
-          } else {
-            GRN_LOG(ctx_, GRN_LOG_DEBUG,
-                    "[mroonga][count-skip][false] "
-                    "full text search condition and more conditions: %u",
-                    select_lex_->select_n_where_fields);
-            DBUG_RETURN(false);
-          }
+          GRN_LOG(ctx_, GRN_LOG_DEBUG,
+                  "[mroonga][count-skip][true] "
+                  "only one full text search condition");
+          DBUG_RETURN(true);
         } else {
           skippable = is_skippable(func_item);
           if (skippable) {
@@ -269,9 +268,10 @@ namespace mrn {
 
     if (!key_info_) {
       GRN_LOG(ctx_, GRN_LOG_DEBUG,
-              "[mroonga][count-skip][false] no active index: <%s>:<%s>",
+              "[mroonga][count-skip][false] no active index: "
+              "<%s>:<" FIELD_NAME_FORMAT ">",
               *(field->table_name),
-              field->field_name.str);
+              FIELD_NAME_FORMAT_VALUE(field));
       DBUG_RETURN(false);
     }
 
@@ -284,20 +284,22 @@ namespace mrn {
         } else {
           GRN_LOG(ctx_, GRN_LOG_DEBUG,
                   "[mroonga][count-skip][false] "
-                  "field's index are out of key part map: %u:%lu: <%s>:<%s>",
+                  "field's index are out of key part map: "
+                  "%u:%lu: <%s>:<" FIELD_NAME_FORMAT ">",
                   i,
                   target_key_part_map_,
                   *(field->table_name),
-                  field->field_name.str);
+                  FIELD_NAME_FORMAT_VALUE(field));
           DBUG_RETURN(false);
         }
       }
     }
 
     GRN_LOG(ctx_, GRN_LOG_DEBUG,
-            "[mroonga][count-skip][false] field isn't indexed: <%s>:<%s>",
+            "[mroonga][count-skip][false] field isn't indexed: "
+            "<%s>:<" FIELD_NAME_FORMAT ">",
             *(field->table_name),
-            field->field_name.str);
+            FIELD_NAME_FORMAT_VALUE(field));
     DBUG_RETURN(false);
   }
 }

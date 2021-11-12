@@ -1,7 +1,7 @@
-#!/bin/sh
+#!/bin/bash
 #
 # Copyright(C) 2010  Tetsuro IKEDA
-# Copyright(C) 2010-2017  Kouhei Sutou <kou@clear-code.com>
+# Copyright(C) 2010-2021  Sutou Kouhei <kou@clear-code.com>
 # Copyright(C) 2011  Kazuhiko
 #
 # This library is free software; you can redistribute it and/or
@@ -16,11 +16,12 @@
 #
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
-export BASE_DIR="$(cd $(dirname $0); pwd)"
-top_dir="$BASE_DIR/.."
-mroonga_test_dir="${top_dir}/mysql-test/mroonga"
+: ${top_build_dir:="$(cd .; pwd)"}
+source_dir="$(cd $(dirname $0); pwd)"
+top_source_dir="${source_dir}/.."
+mroonga_test_dir="${top_source_dir}/mysql-test/mroonga"
 
 n_processors=1
 case `uname` in
@@ -36,16 +37,20 @@ case `uname` in
 esac
 
 if [ "$NO_MAKE" != "yes" ]; then
-  MAKE_ARGS=
-  if [ -n "$n_processors" ]; then
-    MAKE_ARGS="-j${n_processors}"
+  if [ -f "${top_build_dir}/build.ninja" ]; then
+    ninja -C "${top_build_dir}" || exit $?
+  else
+    MAKE_ARGS=
+    if [ -n "$n_processors" ]; then
+      MAKE_ARGS="-j${n_processors}"
+    fi
+    make $MAKE_ARGS -C "${top_build_dir}" > /dev/null || exit $?
   fi
-  make $MAKE_ARGS -C $top_dir > /dev/null || exit 1
 fi
 
-. "${top_dir}/config.sh"
+. "${top_build_dir}/config.sh"
 
-bundled_groonga_normalizer_mysql_dir="${top_dir}/vendor/groonga/vendor/plugins/groonga-normalizer-mysql"
+bundled_groonga_normalizer_mysql_dir="${top_source_dir}/vendor/groonga/vendor/plugins/groonga-normalizer-mysql"
 if [ -d "${bundled_groonga_normalizer_mysql_dir}" ]; then
   GRN_PLUGINS_DIR="${bundled_groonga_normalizer_mysql_dir}"
   export GRN_PLUGINS_DIR
@@ -70,32 +75,40 @@ source_test_suites_dir="${source_mysql_test_dir}/suite"
 source_test_include_dir="${source_mysql_test_dir}/include"
 build_test_suites_dir="${build_mysql_test_dir}/suite"
 build_test_include_dir="${build_mysql_test_dir}/include"
-case "${MYSQL_VERSION}" in
-  5.1.*)
-    plugins_dir="${MYSQL_BUILD_DIR}/lib/mysql/plugin"
-    if [ ! -d "${build_test_suites_dir}" ]; then
-      mkdir -p "${build_test_suites_dir}"
-    fi
-    ;;
-  *)
-    if [ ! -d "${build_test_suites_dir}" ]; then
-      ln -s "${source_test_suites_dir}" "${build_test_suites_dir}"
-    fi
-    if [ "${mariadb}" = "yes" ]; then
-      if [ "${MRN_BUNDLED}" != "TRUE" ]; then
-	mariadb_mroonga_plugin_dir="${MYSQL_BUILD_DIR}/plugin/mroonga"
-	if [ ! -e "${mariadb_mroonga_plugin_dir}" ]; then
-	  ln -s "${top_dir}" "${mariadb_mroonga_plugin_dir}"
-	fi
+if [ ! -d "${build_test_suites_dir}" ]; then
+  ln -s "${source_test_suites_dir}" "${build_test_suites_dir}"
+fi
+if [ "${mariadb}" = "yes" ]; then
+  if [ "${MRN_BUNDLED}" != "TRUE" ]; then
+    mariadb_mroonga_plugin_dir="${MYSQL_BUILD_DIR}/plugin/mroonga"
+    if [ ! -e "${mariadb_mroonga_plugin_dir}" ]; then
+      if [ -d "${top_build_dir}/.libs" ]; then
+        ln -s "${top_build_dir}/.libs" "${mariadb_mroonga_plugin_dir}"
+      else
+        ln -s "${top_build_dir}/" "${mariadb_mroonga_plugin_dir}"
       fi
-      plugins_dir=
-    elif [ "${percona}" = "yes" ]; then
-      plugins_dir="${MYSQL_SOURCE_DIR}/lib/mysql/plugin"
-    else
-      plugins_dir="${MYSQL_SOURCE_DIR}/lib/plugin"
     fi
-    ;;
-esac
+  fi
+  plugins_dir=
+else
+  case ${MYSQL_VERSION} in
+    8.*)
+      if [ -d "${MYSQL_BUILD_DIR}/plugin_output_directory" ]; then
+        plugins_dir="${MYSQL_BUILD_DIR}/plugin_output_directory"
+      else
+        plugins_dir="${MYSQL_BUILD_DIR}/lib/plugin"
+      fi
+      ;;
+    *)
+      if [ "${percona}" = "yes" ]; then
+        plugins_dir="${MYSQL_SOURCE_DIR}/lib/mysql/plugin"
+      else
+        plugins_dir="${MYSQL_SOURCE_DIR}/lib/plugin"
+      fi
+
+      ;;
+  esac
+fi
 
 same_link_p()
 {
@@ -146,11 +159,22 @@ all_test_suite_names=""
 suite_dir="${mroonga_test_dir}/.."
 cd "${suite_dir}"
 suite_dir="$(pwd)"
-for test_suite_name in \
-  $(find mroonga -type d -name 'include' '!' -prune -o \
-         -type d '!' -name 'mroonga' \
-         '!' -name 'include' \
-         '!' -name '[tr]'); do
+find_conditions=(-type d)
+find_conditions+=('(')
+find_conditions+=(-name 'include')
+case ${MYSQL_VERSION} in
+  8.*)
+    find_conditions+=('-o' -name 'optimization')
+    find_conditions+=('-o' -name 'wrapper')
+    ;;
+esac
+find_conditions+=(')')
+find_conditions+=(-prune -o)
+find_conditions+=(-type d)
+find_conditions+=('!' -name 'mroonga')
+find_conditions+=('!' -name '[tr]')
+find_conditions+=(-print)
+for test_suite_name in $(find mroonga "${find_conditions[@]}"); do
   if [ -n "${all_test_suite_names}" ]; then
     all_test_suite_names="${all_test_suite_names},"
   fi
@@ -159,14 +183,14 @@ done
 cd -
 
 if [ -n "${plugins_dir}" ]; then
-  if [ -d "${top_dir}/.libs" ]; then
-    make -C ${top_dir} \
+  if [ -d "${top_build_dir}/.libs" ]; then
+    make -C ${top_build_dir} \
 	 install-pluginLTLIBRARIES \
 	 plugindir=${plugins_dir} > /dev/null || \
       exit 1
   else
     mkdir -p "${plugins_dir}"
-    cp "${top_dir}/ha_mroonga.so" "${plugins_dir}" || exit 1
+    cp "${top_build_dir}/ha_mroonga.so" "${plugins_dir}" || exit 1
   fi
 fi
 
@@ -180,6 +204,11 @@ while [ $# -gt 0 ]; do
     --manual-gdb|--gdb|--client-gdb|--boot-gdb|--debug|--valgrind)
       n_processors=1
       mysql_test_run_options="${mysql_test_run_options} ${arg}"
+      ;;
+    --record)
+      mysql_test_run_options="${mysql_test_run_options} ${arg}"
+      mysql_test_run_options="${mysql_test_run_options} $1"
+      shift
       ;;
     --*)
       mysql_test_run_options="${mysql_test_run_options} ${arg}"
@@ -225,8 +254,10 @@ if [ -z "$test_suite_names" ]; then
 fi
 
 mysql_test_run_args=""
-if [ "${percona}" != "yes" ]; then
-  mysql_test_run_args="${mysql_test_run_args} --mem"
+if [ -z "${CI}" ]; then
+  if [ "${percona}" != "yes" ]; then
+    mysql_test_run_args="${mysql_test_run_args} --mem"
+  fi
 fi
 mysql_test_run_args="${mysql_test_run_args} --parallel=${n_processors}"
 mysql_test_run_args="${mysql_test_run_args} --retry=1"

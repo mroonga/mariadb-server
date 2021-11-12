@@ -12,7 +12,7 @@
 #
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
 --source ../../include/mroonga/check_mariadb.inc
 --source ../../include/mroonga/check_version.inc
@@ -22,8 +22,8 @@ if ($mariadb) {
 }
 
 if (!$mariadb) {
-  if ($version_5_6) {
-    let $fractional_seconds = `SELECT @@global.version >= '5.6'`;
+  if ($version_5_6_or_later) {
+    let $fractional_seconds = 1;
   }
 }
 

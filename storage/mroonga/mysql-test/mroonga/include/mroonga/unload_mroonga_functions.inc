@@ -12,10 +12,11 @@
 #
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
 --disable_query_log
 DROP FUNCTION last_insert_grn_id;
+DROP FUNCTION mroonga_last_insert_grn_id;
 DROP FUNCTION mroonga_snippet;
 DROP FUNCTION mroonga_command;
 DROP FUNCTION mroonga_escape;

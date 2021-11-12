@@ -1,6 +1,6 @@
 /* -*- c-basic-offset: 2; indent-tabs-mode: nil -*- */
 /*
-  Copyright(C) 2015-2017 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2015-2020  Sutou Kouhei <kou@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -14,7 +14,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <mrn_mysql.h>
@@ -29,6 +29,10 @@
 #include <mrn_variables.hpp>
 #include <mrn_query_parser.hpp>
 #include <mrn_current_thread.hpp>
+#include <mrn_index_table_name.hpp>
+#include <mrn_smart_grn_obj.hpp>
+
+#include <string>
 
 MRN_BEGIN_DECLS
 
@@ -38,18 +42,18 @@ extern mrn::ContextPool *mrn_context_pool;
 typedef struct st_mrn_snippet_html_info
 {
   grn_ctx *ctx;
+  grn_obj result;
+  unsigned int mysql_table_name_index;
+  unsigned int mysql_index_name_index;
+  unsigned int mysql_lexicon_name_index;
   grn_obj *db;
   bool use_shared_db;
   grn_obj *snippet;
-  String result_str;
-  struct {
-    bool used;
-    grn_obj *table;
-    grn_obj *default_column;
-  } query_mode;
+  grn_obj *query_table;
+  grn_obj *query_default_column;
 } mrn_snippet_html_info;
 
-static my_bool mrn_snippet_html_prepare(mrn_snippet_html_info *info,
+static mrn_bool mrn_snippet_html_prepare(mrn_snippet_html_info *info,
                                         UDF_ARGS *args,
                                         char *message,
                                         grn_obj **snippet)
@@ -63,15 +67,10 @@ static my_bool mrn_snippet_html_prepare(mrn_snippet_html_info *info,
   const char *open_tag = "<span class=\"keyword\">";
   const char *close_tag = "</span>";
   grn_snip_mapping *mapping = GRN_SNIP_MAPPING_HTML_ESCAPE;
-  grn_obj *expr = NULL;
-  String *result_str = &(info->result_str);
 
   *snippet = NULL;
 
   mrn::encoding::set_raw(ctx, system_charset_info);
-  if (!(system_charset_info->state & (MY_CS_BINSORT | MY_CS_CSSORT))) {
-    flags |= GRN_SNIP_NORMALIZE;
-  }
 
   *snippet = grn_snip_open(ctx, flags,
                            width, max_n_results,
@@ -87,74 +86,166 @@ static my_bool mrn_snippet_html_prepare(mrn_snippet_html_info *info,
     goto error;
   }
 
-  if (info->query_mode.used) {
-    if (!info->query_mode.table) {
-      grn_obj *short_text;
-      short_text = grn_ctx_at(info->ctx, GRN_DB_SHORT_TEXT);
-      info->query_mode.table = grn_table_create(info->ctx,
-                                                NULL, 0, NULL,
-                                                GRN_TABLE_HASH_KEY,
-                                                short_text,
-                                                NULL);
-    }
-    if (!info->query_mode.default_column) {
-      info->query_mode.default_column =
-        grn_obj_column(info->ctx,
-                       info->query_mode.table,
-                       GRN_COLUMN_NAME_KEY,
-                       GRN_COLUMN_NAME_KEY_LEN);
-    }
-
-    grn_obj *record = NULL;
-    GRN_EXPR_CREATE_FOR_QUERY(info->ctx, info->query_mode.table, expr, record);
-    if (!expr) {
-      if (message) {
-        snprintf(message, MYSQL_ERRMSG_SIZE,
-                 "mroonga_snippet_html(): "
-                 "failed to create expression: <%s>",
-                 ctx->errbuf);
-      }
-      goto error;
-    }
-
-    mrn::QueryParser query_parser(info->ctx,
-                                  current_thd,
-                                  expr,
-                                  info->query_mode.default_column,
-                                  0,
-                                  NULL);
-    grn_rc rc = query_parser.parse(args->args[1], args->lengths[1]);
-    if (rc != GRN_SUCCESS) {
-      if (message) {
-        snprintf(message, MYSQL_ERRMSG_SIZE,
-                 "mroonga_snippet_html(): "
-                 "failed to parse query: <%s>",
-                 ctx->errbuf);
-      }
-      goto error;
-    }
-
-    rc = grn_expr_snip_add_conditions(info->ctx,
-                                      expr,
-                                      *snippet,
-                                      0,
-                                      NULL, NULL,
-                                      NULL, NULL);
-    if (rc != GRN_SUCCESS) {
-      if (message) {
-        snprintf(message, MYSQL_ERRMSG_SIZE,
-                 "mroonga_snippet_html(): "
-                 "failed to add conditions: <%s>",
-                 ctx->errbuf);
-      }
-      goto error;
+  if (info->mysql_table_name_index == 0 &&
+      info->mysql_index_name_index == 0 &&
+      info->mysql_lexicon_name_index == 0) {
+    if (!(system_charset_info->state & (MY_CS_BINSORT | MY_CS_CSSORT))) {
+      grn_snip_set_normalizer(ctx, *snippet, GRN_NORMALIZER_AUTO);
     }
   } else {
-    unsigned int i;
-    for (i = 1; i < args->arg_count; ++i) {
-      if (!args->args[i]) {
-        continue;
+    std::string lexicon_name;
+    if (info->mysql_lexicon_name_index > 0) {
+      const char *mysql_lexicon_name =
+        args->args[info->mysql_lexicon_name_index];
+      const size_t mysql_lexicon_name_length =
+        args->lengths[info->mysql_lexicon_name_index];
+      if (mysql_lexicon_name_length == 0) {
+        if (message) {
+          snprintf(message, MYSQL_ERRMSG_SIZE,
+                   "mroonga_snippet_html(): lexicon_name is empty");
+        }
+        goto error;
       }
+      lexicon_name = std::string(mysql_lexicon_name,
+                                 mysql_lexicon_name_length);
+    } else {
+      if (info->mysql_table_name_index == 0) {
+        if (message) {
+          snprintf(message, MYSQL_ERRMSG_SIZE,
+                   "mroonga_snippet_html(): table_name is missing");
+        }
+        goto error;
+      }
+      const char *mysql_table_name = args->args[info->mysql_table_name_index];
+      const size_t mysql_table_name_length =
+        args->lengths[info->mysql_table_name_index];
+      if (mysql_table_name_length == 0) {
+        if (message) {
+          snprintf(message, MYSQL_ERRMSG_SIZE,
+                   "mroonga_snippet_html(): table_name is empty");
+        }
+        goto error;
+      }
+      if (info->mysql_index_name_index == 0) {
+        if (message) {
+          snprintf(message, MYSQL_ERRMSG_SIZE,
+                   "mroonga_snippet_html(): index_name is missing");
+        }
+        goto error;
+      }
+      const char *mysql_index_name = args->args[info->mysql_index_name_index];
+      const size_t mysql_index_name_length =
+        args->lengths[info->mysql_index_name_index];
+      if (mysql_index_name_length == 0) {
+        if (message) {
+          snprintf(message, MYSQL_ERRMSG_SIZE,
+                   "mroonga_snippet_html(): index_name is empty");
+        }
+        goto error;
+      }
+      mrn::IndexTableName index_table_name(mysql_table_name,
+                                           mysql_table_name_length,
+                                           mysql_index_name,
+                                           mysql_index_name_length);
+      lexicon_name = std::string(index_table_name.c_str(),
+                                 index_table_name.length());
+    }
+    mrn::SmartGrnObj lexicon(ctx,
+                             lexicon_name.c_str(),
+                             lexicon_name.length());
+    if (!lexicon.get()) {
+      if (message) {
+        snprintf(message, MYSQL_ERRMSG_SIZE,
+                 "mroonga_snippet_html(): nonexistent index: <%.*s>",
+                 static_cast<int>(lexicon_name.length()),
+                 lexicon_name.c_str());
+      }
+      goto error;
+    }
+    grn_snip_set_normalizer(ctx, *snippet, lexicon.get());
+  }
+
+  for (unsigned int i = 1; i < args->arg_count; ++i) {
+    if (!args->args[i]) {
+      continue;
+    }
+    grn_raw_string arg_name = {
+      args->attributes[i],
+      args->attribute_lengths[i],
+    };
+    if (GRN_RAW_STRING_EQUAL_CSTRING(arg_name, "table_name") ||
+        GRN_RAW_STRING_EQUAL_CSTRING(arg_name, "index_name") ||
+        GRN_RAW_STRING_EQUAL_CSTRING(arg_name, "lexicon_name")) {
+      // Do nothing
+    } else if (GRN_RAW_STRING_EQUAL_CSTRING(arg_name, "query")) {
+      if (!info->query_table) {
+        grn_obj *short_text;
+        short_text = grn_ctx_at(info->ctx, GRN_DB_SHORT_TEXT);
+        info->query_table = grn_table_create(info->ctx,
+                                             NULL, 0, NULL,
+                                             GRN_TABLE_HASH_KEY,
+                                             short_text,
+                                             NULL);
+      }
+      if (!info->query_default_column) {
+        info->query_default_column =
+          grn_obj_column(info->ctx,
+                         info->query_table,
+                         GRN_COLUMN_NAME_KEY,
+                         GRN_COLUMN_NAME_KEY_LEN);
+      }
+
+      grn_obj *expr = NULL;
+      grn_obj *record = NULL;
+      GRN_EXPR_CREATE_FOR_QUERY(info->ctx, info->query_table, expr, record);
+      if (!expr) {
+        if (message) {
+          snprintf(message, MYSQL_ERRMSG_SIZE,
+                   "mroonga_snippet_html(): "
+                   "failed to create expression: <%s>",
+                   ctx->errbuf);
+        }
+        goto error;
+      }
+
+      mrn::SmartGrnObj smart_expr(ctx, expr);
+      mrn::QueryParser query_parser(info->ctx,
+                                    current_thd,
+                                    expr,
+                                    info->query_default_column,
+                                    0,
+                                    NULL);
+      grn_rc rc = query_parser.parse(args->args[i], args->lengths[i]);
+      if (rc != GRN_SUCCESS) {
+        if (message) {
+          snprintf(message, MYSQL_ERRMSG_SIZE,
+                   "mroonga_snippet_html(): "
+                   "failed to parse query: "
+                   "<%.*s>: "
+                   "<%s>",
+                   static_cast<int>(args->lengths[i]),
+                   args->args[i],
+                   ctx->errbuf);
+        }
+        goto error;
+      }
+
+      rc = grn_expr_snip_add_conditions(info->ctx,
+                                        expr,
+                                        *snippet,
+                                        0,
+                                        NULL, NULL,
+                                        NULL, NULL);
+      if (rc != GRN_SUCCESS) {
+        if (message) {
+          snprintf(message, MYSQL_ERRMSG_SIZE,
+                   "mroonga_snippet_html(): "
+                   "failed to add conditions: <%s>",
+                   ctx->errbuf);
+        }
+        goto error;
+      }
+    } else {
       grn_rc rc = grn_snip_add_cond(ctx, *snippet,
                                     args->args[i], args->lengths[i],
                                     NULL, 0,
@@ -171,22 +262,18 @@ static my_bool mrn_snippet_html_prepare(mrn_snippet_html_info *info,
     }
   }
 
-  result_str->set_charset(system_charset_info);
-  DBUG_RETURN(FALSE);
+  DBUG_RETURN(false);
 
 error:
-  if (expr) {
-    grn_obj_close(ctx, expr);
-  }
   if (*snippet) {
     grn_obj_close(ctx, *snippet);
   }
-  DBUG_RETURN(TRUE);
+  DBUG_RETURN(true);
 }
 
-MRN_API my_bool mroonga_snippet_html_init(UDF_INIT *init,
-                                          UDF_ARGS *args,
-                                          char *message)
+MRN_API mrn_bool mroonga_snippet_html_init(UDF_INIT *init,
+                                           UDF_ARGS *args,
+                                           char *message)
 {
   MRN_DBUG_ENTER_FUNCTION();
 
@@ -266,27 +353,92 @@ MRN_API my_bool mroonga_snippet_html_init(UDF_INIT *init,
       goto error;
     }
   }
+  GRN_TEXT_INIT(&(info->result), 0);
+  info->mysql_table_name_index = 0;
+  info->mysql_index_name_index = 0;
+  info->mysql_lexicon_name_index = 0;
 
-  info->query_mode.used = FALSE;
-
-  if (args->arg_count == 2 &&
-      args->attribute_lengths[1] == strlen("query") &&
-      strncmp(args->attributes[1], "query", strlen("query")) == 0) {
-    info->query_mode.used = TRUE;
-    info->query_mode.table = NULL;
-    info->query_mode.default_column = NULL;
+  info->query_table = NULL;
+  info->query_default_column = NULL;
+  for (unsigned int i = 1; i < args->arg_count; ++i) {
+    grn_raw_string arg_name = {
+      args->attributes[i],
+      args->attribute_lengths[i],
+    };
+    if (GRN_RAW_STRING_EQUAL_CSTRING(arg_name, "query") ||
+        GRN_RAW_STRING_EQUAL_CSTRING(arg_name, "keyword")) {
+      // Do nothing
+    } else if (GRN_RAW_STRING_EQUAL_CSTRING(arg_name, "table_name")) {
+      if (info->mysql_table_name_index != 0) {
+        sprintf(message,
+                "mroonga_snippet_html(): "
+                "can't specify table_name multiple times");
+        goto error;
+      }
+      if (info->mysql_lexicon_name_index != 0) {
+        sprintf(message,
+                "mroonga_snippet_html(): "
+                "can't specify table_name with lexicon_name");
+        goto error;
+      }
+      info->mysql_table_name_index = i;
+    } else if (GRN_RAW_STRING_EQUAL_CSTRING(arg_name, "index_name")) {
+      if (info->mysql_index_name_index != 0) {
+        sprintf(message,
+                "mroonga_snippet_html(): "
+                "can't specify index_name multiple times");
+        goto error;
+      }
+      if (info->mysql_lexicon_name_index != 0) {
+        sprintf(message,
+                "mroonga_snippet_html(): "
+                "can't specify index_name with lexicon_name");
+        goto error;
+      }
+      info->mysql_index_name_index = i;
+    } else if (GRN_RAW_STRING_EQUAL_CSTRING(arg_name, "lexicon_name")) {
+      if (info->mysql_lexicon_name_index != 0) {
+        sprintf(message,
+                "mroonga_snippet_html(): "
+                "can't specify lexicon_name multiple times");
+        goto error;
+      }
+      if (info->mysql_table_name_index != 0) {
+        sprintf(message,
+                "mroonga_snippet_html(): "
+                "can't specify lexicon_name with table_name");
+        goto error;
+      }
+      if (info->mysql_index_name_index != 0) {
+        sprintf(message,
+                "mroonga_snippet_html(): "
+                "can't specify lexicon_name with index_name");
+        goto error;
+      }
+      info->mysql_lexicon_name_index = i;
+    } else {
+      if (arg_name.length > 0 && arg_name.value[0] == '\'') {
+        // No "AS XXX"
+      } else {
+        sprintf(message,
+                "mroonga_snippet_html(): unknown named argument: %.*s",
+                static_cast<int>(arg_name.length),
+                arg_name.value);
+        goto error;
+      }
+    }
   }
 
   {
-    bool all_keywords_are_constant = TRUE;
+    bool all_arguments_are_constant = true;
     for (unsigned int i = 1; i < args->arg_count; ++i) {
       if (!args->args[i]) {
-        all_keywords_are_constant = FALSE;
+        all_arguments_are_constant = false;
         break;
       }
     }
 
-    if (all_keywords_are_constant) {
+    if (all_arguments_are_constant) {
       if (mrn_snippet_html_prepare(info, args, message, &(info->snippet))) {
         goto error;
       }
@@ -297,17 +449,20 @@ MRN_API my_bool mroonga_snippet_html_init(UDF_INIT *init,
 
   init->ptr = (char *)info;
 
-  DBUG_RETURN(FALSE);
+  DBUG_RETURN(false);
 
 error:
   if (info) {
+    if (info->db) {
+      GRN_OBJ_FIN(info->ctx, &(info->result));
+    }
     if (!info->use_shared_db) {
       grn_obj_close(info->ctx, info->db);
     }
     mrn_context_pool->release(info->ctx);
     my_free(info);
   }
-  DBUG_RETURN(TRUE);
+  DBUG_RETURN(true);
 }
 
 MRN_API char *mroonga_snippet_html(UDF_INIT *init,
@@ -324,7 +479,7 @@ MRN_API char *mroonga_snippet_html(UDF_INIT *init,
 
   grn_ctx *ctx = info->ctx;
   grn_obj *snippet = info->snippet;
-  String *result_str = &(info->result_str);
+  grn_obj *result_buffer = &(info->result);
 
   if (!args->args[0]) {
     *is_null = 1;
@@ -353,36 +508,30 @@ MRN_API char *mroonga_snippet_html(UDF_INIT *init,
     }
 
     *is_null = 0;
-    result_str->length(0);
+    GRN_BULK_REWIND(result_buffer);
 
     {
       const char *start_tag = "<div class=\"snippet\">";
       const char *end_tag = "</div>";
       size_t start_tag_length = strlen(start_tag);
       size_t end_tag_length = strlen(end_tag);
-      unsigned int max_length_per_snippet =
-        start_tag_length + end_tag_length + max_tagged_length;
-      if (result_str->reserve(max_length_per_snippet * n_results)) {
-        my_error(ER_OUT_OF_RESOURCES, MYF(0), HA_ERR_OUT_OF_MEM);
-        goto error;
-      }
-
       for (unsigned int i = 0; i < n_results; ++i) {
-        result_str->q_append(start_tag, start_tag_length);
+        GRN_TEXT_PUT(ctx, result_buffer, start_tag, start_tag_length);
 
+        grn_bulk_reserve(ctx, result_buffer, max_tagged_length);
         unsigned int result_length;
         grn_rc rc =
           grn_snip_get_result(ctx, snippet, i,
-                              (char *)result_str->ptr() + result_str->length(),
+                              GRN_BULK_CURR(result_buffer),
                               &result_length);
         if (rc) {
           my_printf_error(ER_MRN_ERROR_FROM_GROONGA_NUM,
                           ER_MRN_ERROR_FROM_GROONGA_STR, MYF(0), ctx->errbuf);
           goto error;
         }
-        result_str->length(result_str->length() + result_length);
+        grn_bulk_space(ctx, result_buffer, result_length);
 
-        result_str->q_append(end_tag, end_tag_length);
+        GRN_TEXT_PUT(ctx, result_buffer, end_tag, end_tag_length);
       }
     }
 
@@ -396,8 +545,8 @@ MRN_API char *mroonga_snippet_html(UDF_INIT *init,
     }
   }
 
-  *length = result_str->length();
-  DBUG_RETURN((char *)result_str->ptr());
+  *length = GRN_TEXT_LEN(result_buffer);
+  DBUG_RETURN(GRN_TEXT_VALUE(result_buffer));
 
 error:
   if (!info->snippet && snippet) {
@@ -423,15 +572,13 @@ MRN_API void mroonga_snippet_html_deinit(UDF_INIT *init)
   if (info->snippet) {
     grn_obj_close(info->ctx, info->snippet);
   }
-  if (info->query_mode.used) {
-    if (info->query_mode.default_column) {
-      grn_obj_close(info->ctx, info->query_mode.default_column);
-    }
-    if (info->query_mode.table) {
-      grn_obj_close(info->ctx, info->query_mode.table);
-    }
+  if (info->query_default_column) {
+    grn_obj_close(info->ctx, info->query_default_column);
   }
-  MRN_STRING_FREE(info->result_str);
+  if (info->query_table) {
+    grn_obj_close(info->ctx, info->query_table);
+  }
+  GRN_OBJ_FIN(info->ctx, &(info->result));
   if (!info->use_shared_db) {
     grn_obj_close(info->ctx, info->db);
   }

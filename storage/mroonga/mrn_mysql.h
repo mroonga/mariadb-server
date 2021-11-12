@@ -1,6 +1,6 @@
 /* -*- c-basic-offset: 2 -*- */
 /*
-  Copyright(C) 2011-2013 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2011-2018 Kouhei Sutou <kou@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -14,14 +14,14 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #ifndef MRN_MYSQL_H_
 #define MRN_MYSQL_H_
 
 #ifdef HAVE_CONFIG_H
-#  include <my_global.h>
+#  include <config.h>
 /* We need to undefine them because my_config.h defines them. :< */
 #  undef VERSION
 #  undef PACKAGE
@@ -43,8 +43,15 @@
 #define MYSQL_SERVER 1
 #include <mysql_version.h>
 
+#include <sql_plugin.h>
+#if MYSQL_VERSION_ID >= 50600
+#  include <my_default.h>
+#endif
+
 #ifdef MARIADB_BASE_VERSION
 #  define MRN_MARIADB_P 1
+#elif defined(FIRST_SUPPORTED_COMPRESSED_COLUMNS_VERSION)
+#  define MRN_PERCONA_P 1
 #endif
 
 #include <sql_const.h>

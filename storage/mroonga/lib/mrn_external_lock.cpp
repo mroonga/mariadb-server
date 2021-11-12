@@ -14,7 +14,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include "mrn_external_lock.hpp"
@@ -33,7 +33,7 @@ namespace mrn {
 
   ExternalLock::~ExternalLock() {
     if (lock_type_ != F_UNLCK) {
-      handler_->ha_external_unlock(thd_);
+      handler_->ha_external_lock(thd_, F_UNLCK);
     }
   }
 

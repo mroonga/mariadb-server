@@ -11,9 +11,6 @@ libraries =					\
 	$(top_builddir)/udf/libmrn_udf.la	\
 	$(top_builddir)/lib/libmrn_no_mysql.la	\
 	$(top_builddir)/lib/libmrn_need_mysql.la
-if WITH_LIBMYSQLSERVICES_COMPAT
-libraries += $(top_builddir)/lib/libmysqlservices.la
-endif
 
 dynamic_plugin_ldflags  = -module $(GROONGA_LIBS) $(MYSQL_LIBS)
 dynamic_plugin_cxxflags = $(AM_CXXFLAGS) $(MYSQL_CFLAGS) -DMYSQL_DYNAMIC_PLUGIN
@@ -68,41 +65,16 @@ update-latest-release: ensure-cutter-source-path
 	  echo "\$$(NEW_RELEASE_DATE) is missing";	\
 	  exit 1;					\
 	fi
-	cd $(top_srcdir) &&				\
+	cd $(top_srcdir) &&					\
 	  "$(CUTTER_SOURCE_PATH)/misc/update-latest-release.rb"	\
-	  $(PACKAGE) $(OLD_RELEASE) $(OLD_RELEASE_DATE)	\
-	  $(VERSION) $(NEW_RELEASE_DATE)		\
-	  packages/rpm/centos/mariadb-mroonga.spec.in	\
-	  packages/rpm/centos/mariadb-10.1-mroonga.spec.in	\
-	  packages/rpm/centos/mariadb-10.2-mroonga.spec.in	\
-	  packages/rpm/centos/mysql55-mroonga.spec.in	\
-	  packages/rpm/centos/mysql56-community-mroonga.spec.in	\
-	  packages/rpm/centos/mysql57-community-mroonga.spec.in	\
-	  packages/rpm/centos/percona-server-56-mroonga.spec.in	\
-	  packages/rpm/centos/percona-server-57-mroonga.spec.in	\
-	  doc/source/install/*.rst			\
-	  doc/locale/*/LC_MESSAGES/install.po		\
+	  $(PACKAGE) $(OLD_RELEASE) $(OLD_RELEASE_DATE)		\
+	  $(VERSION) $(NEW_RELEASE_DATE)			\
+	  doc/source/install/*.rst				\
+	  doc/locale/*/LC_MESSAGES/install.po			\
 	  $(MROONGA_GITHUB_COM_PATH)/_config.yml
-	cd $(top_srcdir) &&				\
-	  "$(CUTTER_SOURCE_PATH)/misc/update-latest-release.rb"	\
-	  $(PACKAGE)-5.5 $(OLD_RELEASE) $(OLD_RELEASE_DATE)	\
-	  $(VERSION) $(NEW_RELEASE_DATE)		\
-	  packages/debian-5.5/changelog
-	cd $(top_srcdir) &&				\
-	  "$(CUTTER_SOURCE_PATH)/misc/update-latest-release.rb"	\
-	  $(PACKAGE)-5.6 $(OLD_RELEASE) $(OLD_RELEASE_DATE)	\
-	  $(VERSION) $(NEW_RELEASE_DATE)		\
-	  packages/debian-5.6/changelog
-	cd $(top_srcdir) &&				\
-	  "$(CUTTER_SOURCE_PATH)/misc/update-latest-release.rb"	\
-	  $(PACKAGE)-5.7 $(OLD_RELEASE) $(OLD_RELEASE_DATE)	\
-	  $(VERSION) $(NEW_RELEASE_DATE)		\
-	  packages/debian-5.7/changelog
-	cd $(top_srcdir) &&				\
-	  "$(CUTTER_SOURCE_PATH)/misc/update-latest-release.rb"	\
-	  $(PACKAGE)-mariadb-10.0 $(OLD_RELEASE) $(OLD_RELEASE_DATE)	\
-	  $(VERSION) $(NEW_RELEASE_DATE)		\
-	  packages/debian-mariadb-10.0/changelog
+	cd $(top_srcdir)/packages &&		\
+	  rake version:update			\
+	  RELEASE_TIME=$(NEW_RELEASE_DATE)
 
 update-po:
 	@for lang in $(LOCALES); do						\
@@ -150,7 +122,7 @@ update-version:
 	@echo -n $(NEW_VERSION_MINOR) > $(srcdir)/version_minor
 	@echo -n $(NEW_VERSION_MICRO) > $(srcdir)/version_micro
 	@echo -n $(NEW_VERSION_MAJOR).$(NEW_VERSION_MINOR)$(NEW_VERSION_MICRO) \
-	  > $(srcdir)/version
+	  > $(srcdir)/version_full
 	@if test $(NEW_VERSION_MINOR) -eq 0 ; then				\
 	  printf "0x%02x%02x"							\
 	    $(NEW_VERSION_MAJOR) $(NEW_VERSION_MICRO)				\

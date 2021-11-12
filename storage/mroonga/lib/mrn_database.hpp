@@ -14,7 +14,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #ifndef MRN_DATABASE_HPP_
@@ -39,6 +39,7 @@ namespace mrn {
   private:
     grn_ctx *ctx_;
     grn_obj *db_;
+    grn_cache *cache_;
     grn_hash *broken_table_names_;
     bool is_broken_;
   };

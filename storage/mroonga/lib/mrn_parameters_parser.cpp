@@ -1,7 +1,7 @@
 /* -*- c-basic-offset: 2 -*- */
 /*
   Copyright(C) 2011-2013 Kentoku SHIBA
-  Copyright(C) 2011-2015 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2011-2021 Sutou Kouhei <kou@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -15,13 +15,17 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include "mrn_parameters_parser.hpp"
 
 #include <mrn_mysql_compat.h>
 #include <mrn_variables.hpp>
+
+#ifdef MRN_HAVE_SQL_DERROR_H
+#  include <sql/derror.h>
+#endif
 
 namespace mrn {
   class Parameter {
@@ -48,6 +52,7 @@ namespace mrn {
                                      unsigned int input_length)
     : input_(input),
       input_length_(input_length),
+      parsed_(false),
       parameters_(NULL) {
   }
 
@@ -59,7 +64,11 @@ namespace mrn {
     list_free(parameters_, false);
   }
 
-  void ParametersParser::parse() {
+  void ParametersParser::ensure_parsed() {
+    if (parsed_) {
+      return;
+    }
+
     const char *current = input_;
     const char *end = input_ + input_length_;
     for (; current < end; ++current) {
@@ -101,6 +110,7 @@ namespace mrn {
         break;
       }
     }
+    parsed_ = true;
   }
 
   const char *ParametersParser::parse_value(const char *current,
@@ -122,7 +132,7 @@ namespace mrn {
       if (current[0] == quote) {
         Parameter *parameter = new Parameter(key, key_length,
                                              value, value_length);
-        list_push(parameters_, parameter);
+        parameters_ = list_cons(parameter, parameters_);
         found = true;
         ++current;
         break;
@@ -166,6 +176,7 @@ namespace mrn {
   }
 
   const char *ParametersParser::operator[](const char *key) {
+    ensure_parsed();
     for (LIST *next = parameters_; next; next = next->next) {
       Parameter *parameter = static_cast<Parameter *>(next->data);
       if (strcasecmp(parameter->key_, key) == 0) {
@@ -173,5 +184,29 @@ namespace mrn {
       }
     }
     return NULL;
+  }
+
+  const char *ParametersParser::tokenizer() {
+    const char *parser = (*this)["parser"];
+    if (parser) {
+      push_warning_printf(current_thd,
+                          MRN_SEVERITY_WARNING,
+                          ER_WARN_DEPRECATED_SYNTAX,
+                          MRN_GET_ERR_MSG(ER_WARN_DEPRECATED_SYNTAX),
+                          "parser", "tokenizer");
+    }
+    const char *tokenizer = (*this)["tokenizer"];
+    if (!tokenizer) {
+      tokenizer = parser;
+    }
+    return tokenizer;
+  }
+
+  const char *ParametersParser::lexicon() {
+    const char *lexicon = (*this)["lexicon"];
+    if (!lexicon) {
+      lexicon = (*this)["table"]; // For backward compatibility
+    }
+    return lexicon;
   }
 }

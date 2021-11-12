@@ -1,7 +1,8 @@
 /* -*- c-basic-offset: 2 -*- */
 /*
   Copyright(C) 2011-2013 Kentoku SHIBA
-  Copyright(C) 2011-2017 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2011-2021 Sutou Kouhei <kou@clear-code.com>
+  Copyright(C) 2020-2021 Horimoto Yasuhiro <horimoto@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -15,44 +16,65 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include "mrn_mysql.h"
 
-#if MYSQL_VERSION_ID >= 50500
-#  include <sql_servers.h>
-#  include <sql_base.h>
-#endif
+#include <mysql/plugin.h>
+#include <my_bitmap.h>
+#include <sql_servers.h>
+#include <sql_base.h>
 #ifdef WITH_PARTITION_STORAGE_ENGINE
 #  include <partition_info.h>
 #endif
 #include <sql_plugin.h>
+#include <sql/field.h>
+#include <sql/table.h>
+#include <mysqld.h>
 
 #include "mrn_err.h"
-#include "mrn_table.hpp"
 #include "mrn_mysql_compat.h"
+
+#include "mrn_table.hpp"
 #include "mrn_variables.hpp"
 #include <mrn_lock.hpp>
 
+#ifdef MRN_HAVE_SQL_DERROR_H
+#  include <sql/derror.h>
+#endif
+
+#ifdef MRN_OPEN_TABLE_DEF_USE_TABLE_DEFINITION
+#  include <sql/dd_table_share.h>
+#endif
+
+#include <cstring>
+
 #ifdef MRN_MARIADB_P
+#  if MYSQL_VERSION_ID >= 100300
+     typedef LEX_CSTRING mrn_resolve_name;
+#  else
+     typedef LEX_STRING mrn_resolve_name;
+#  endif
 #  if MYSQL_VERSION_ID >= 100100
-#    define MRN_HA_RESOLVE_BY_NAME(name) ha_resolve_by_name(NULL, (name), TRUE)
+#    define MRN_HA_RESOLVE_BY_NAME(name) ha_resolve_by_name(NULL, (name), true)
 #  else
 #    define MRN_HA_RESOLVE_BY_NAME(name) ha_resolve_by_name(NULL, (name))
 #  endif
 #else
-#  if MYSQL_VERSION_ID >= 50603
-#    define MRN_HA_RESOLVE_BY_NAME(name) ha_resolve_by_name(NULL, (name), TRUE)
+#  if MYSQL_VERSION_ID >= 80017
+     using mrn_resolve_name = LEX_CSTRING;
+#    define MRN_HA_RESOLVE_BY_NAME(name) ha_resolve_by_name(NULL, (name), true)
 #  else
-#    define MRN_HA_RESOLVE_BY_NAME(name) ha_resolve_by_name(NULL, (name))
+     typedef LEX_STRING mrn_resolve_name;
+#    define MRN_HA_RESOLVE_BY_NAME(name) ha_resolve_by_name(NULL, (name), true)
 #  endif
 #endif
 
-#if MYSQL_VERSION_ID >= 50706 && !defined(MRN_MARIADB_P)
-#  define MRN_PLUGIN_DATA(plugin, type) plugin_data<type>(plugin)
-#else
+#ifdef MRN_MARIADB_P
 #  define MRN_PLUGIN_DATA(plugin, type) plugin_data(plugin, type)
+#else
+#  define MRN_PLUGIN_DATA(plugin, type) plugin_data<type>(plugin)
 #endif
 
 #define LEX_STRING_IS_EMPTY(string)                                     \
@@ -64,7 +86,7 @@
 #define MRN_GROONGA_LEN (sizeof(MRN_GROONGA_STR) - 1)
 
 #ifdef MRN_HAVE_TABLE_DEF_CACHE
-extern HASH *mrn_table_def_cache;
+extern mrn_table_def_cache_type *mrn_table_def_cache;
 #endif
 
 #ifdef __cplusplus
@@ -82,20 +104,21 @@ extern PSI_mutex_key mrn_share_mutex_key;
 extern PSI_mutex_key mrn_long_term_share_auto_inc_mutex_key;
 #endif
 
-extern HASH mrn_open_tables;
+extern grn_ctx mrn_ctx;
+extern grn_hash *mrn_open_tables;
 extern mysql_mutex_t mrn_open_tables_mutex;
-extern HASH mrn_long_term_share;
-extern mysql_mutex_t mrn_long_term_share_mutex;
+extern grn_hash *mrn_long_term_shares;
+extern mysql_mutex_t mrn_long_term_shares_mutex;
 extern char *mrn_default_tokenizer;
 extern char *mrn_default_wrapper_engine;
 extern handlerton *mrn_hton_ptr;
-extern HASH mrn_allocated_thds;
+extern grn_hash *mrn_allocated_thds;
 extern mysql_mutex_t mrn_allocated_thds_mutex;
 
 static char *mrn_get_string_between_quote(const char *ptr)
 {
   const char *start_ptr, *end_ptr, *tmp_ptr, *esc_ptr;
-  bool find_flg = FALSE, esc_flg = FALSE;
+  bool find_flg = false, esc_flg = false;
   MRN_DBUG_ENTER_FUNCTION();
 
   start_ptr = strchr(ptr, '\'');
@@ -112,14 +135,14 @@ static char *mrn_get_string_between_quote(const char *ptr)
       {
         esc_ptr = strchr(esc_ptr, '\\');
         if (!esc_ptr || esc_ptr > end_ptr)
-          find_flg = TRUE;
+          find_flg = true;
         else if (esc_ptr == end_ptr - 1)
         {
-          esc_flg = TRUE;
+          esc_flg = true;
           tmp_ptr = end_ptr + 1;
           break;
         } else {
-          esc_flg = TRUE;
+          esc_flg = true;
           esc_ptr += 2;
         }
       }
@@ -137,14 +160,14 @@ static char *mrn_get_string_between_quote(const char *ptr)
       {
         esc_ptr = strchr(esc_ptr, '\\');
         if (!esc_ptr || esc_ptr > end_ptr)
-          find_flg = TRUE;
+          find_flg = true;
         else if (esc_ptr == end_ptr - 1)
         {
-          esc_flg = TRUE;
+          esc_flg = true;
           tmp_ptr = end_ptr + 1;
           break;
         } else {
-          esc_flg = TRUE;
+          esc_flg = true;
           esc_ptr += 2;
         }
       }
@@ -190,7 +213,7 @@ static char *mrn_get_string_between_quote(const char *ptr)
       ++extracted_index;
     }
   } else {
-    memcpy(extracted_string, start_ptr, length);
+    grn_memcpy(extracted_string, start_ptr, length);
     extracted_string[length] = '\0';
   }
 
@@ -204,7 +227,7 @@ void mrn_get_partition_info(const char *table_name, uint table_name_length,
 {
   partition_info *part_info = table->part_info;
   partition_element *tmp_part_elem = NULL, *tmp_sub_elem = NULL;
-  bool tmp_flg = FALSE, tmp_find_flg = FALSE;
+  bool tmp_flg = false, tmp_find_flg = false;
   MRN_DBUG_ENTER_FUNCTION();
   *part_elem = NULL;
   *sub_elem = NULL;
@@ -212,7 +235,7 @@ void mrn_get_partition_info(const char *table_name, uint table_name_length,
     DBUG_VOID_RETURN;
 
   if (table_name && !memcmp(table_name + table_name_length - 5, "#TMP#", 5))
-    tmp_flg = TRUE;
+    tmp_flg = true;
 
   DBUG_PRINT("info", ("mroonga table_name=%s", table_name));
   List_iterator<partition_element> part_it(part_info->partitions);
@@ -244,8 +267,8 @@ void mrn_get_partition_info(const char *table_name, uint table_name_length,
         ) {
           tmp_part_elem = *part_elem;
           tmp_sub_elem = *sub_elem;
-          tmp_flg = FALSE;
-          tmp_find_flg = TRUE;
+          tmp_flg = false;
+          tmp_find_flg = true;
         }
       }
     } else {
@@ -255,7 +278,7 @@ void mrn_get_partition_info(const char *table_name, uint table_name_length,
                                             table->s->path.str,
                                             (*part_elem)->partition_name,
                                             NORMAL_PART_NAME,
-                                            TRUE);
+                                            true);
       if (error != 0)
         DBUG_VOID_RETURN;
       DBUG_PRINT("info", ("mroonga partition name=%s", partition_name));
@@ -269,8 +292,8 @@ void mrn_get_partition_info(const char *table_name, uint table_name_length,
         memcmp(table_name, partition_name, table_name_length - 5) == 0
       ) {
         tmp_part_elem = *part_elem;
-        tmp_flg = FALSE;
-        tmp_find_flg = TRUE;
+        tmp_flg = false;
+        tmp_find_flg = true;
       }
     }
   }
@@ -443,8 +466,14 @@ int mrn_parse_table_param(MRN_SHARE *share, TABLE *table)
 
         switch (title_length)
         {
+        case 5:
+          MRN_PARAM_STR("flags", table_flags);
+          break;
         case 6:
           MRN_PARAM_STR("engine", engine);
+          break;
+        case 9:
+          MRN_PARAM_STR("tokenizer", tokenizer);
           break;
         case 10:
           MRN_PARAM_STR("normalizer", normalizer);
@@ -453,6 +482,7 @@ int mrn_parse_table_param(MRN_SHARE *share, TABLE *table)
           MRN_PARAM_STR("token_filters", token_filters);
           break;
         case 17:
+          /* Deprecated */
           MRN_PARAM_STR("default_tokenizer", default_tokenizer);
           break;
         default:
@@ -480,7 +510,7 @@ int mrn_parse_table_param(MRN_SHARE *share, TABLE *table)
 
   if (share->engine)
   {
-    LEX_CSTRING engine_name;
+    mrn_resolve_name engine_name;
     if (
       (
         share->engine_length == MRN_DEFAULT_LEN &&
@@ -504,7 +534,7 @@ int mrn_parse_table_param(MRN_SHARE *share, TABLE *table)
         goto error;
       }
       share->hton = MRN_PLUGIN_DATA(share->plugin, handlerton *);
-      share->wrapper_mode = TRUE;
+      share->wrapper_mode = true;
     }
   }
 
@@ -516,141 +546,12 @@ error:
 
 bool mrn_is_geo_key(const KEY *key_info)
 {
-  return key_info->algorithm == HA_KEY_ALG_UNDEF &&
+  return key_info->algorithm != HA_KEY_ALG_BTREE &&
+    key_info->algorithm != HA_KEY_ALG_HASH &&
+    key_info->algorithm != HA_KEY_ALG_FULLTEXT &&
     KEY_N_KEY_PARTS(key_info) == 1 &&
+    key_info->key_part[0].field &&
     key_info->key_part[0].field->type() == MYSQL_TYPE_GEOMETRY;
-}
-
-int mrn_add_index_param(MRN_SHARE *share, KEY *key_info, int i)
-{
-  int error;
-  char *param_string = NULL;
-#if MYSQL_VERSION_ID >= 50500
-  int title_length;
-  char *sprit_ptr[2];
-  char *tmp_ptr, *start_ptr;
-#endif
-  THD *thd = current_thd;
-  MRN_DBUG_ENTER_FUNCTION();
-
-#if MYSQL_VERSION_ID >= 50500
-  if (key_info->comment.length == 0)
-  {
-    if (share->key_tokenizer[i]) {
-      my_free(share->key_tokenizer[i]);
-    }
-    share->key_tokenizer[i] = mrn_my_strdup(mrn_default_tokenizer, MYF(MY_WME));
-    if (!share->key_tokenizer[i]) {
-      error = HA_ERR_OUT_OF_MEM;
-      goto error;
-    }
-    share->key_tokenizer_length[i] = strlen(share->key_tokenizer[i]);
-
-    DBUG_RETURN(0);
-  }
-  DBUG_PRINT("info", ("mroonga create comment string"));
-  if (
-    !(param_string = mrn_my_strndup(key_info->comment.str,
-                                    key_info->comment.length,
-                                    MYF(MY_WME)))
-  ) {
-    error = HA_ERR_OUT_OF_MEM;
-    goto error_alloc_param_string;
-  }
-  DBUG_PRINT("info", ("mroonga comment string=%s", param_string));
-
-  sprit_ptr[0] = param_string;
-  while (sprit_ptr[0])
-  {
-    if ((sprit_ptr[1] = strchr(sprit_ptr[0], ',')))
-    {
-      *sprit_ptr[1] = '\0';
-      sprit_ptr[1]++;
-    }
-    tmp_ptr = sprit_ptr[0];
-    sprit_ptr[0] = sprit_ptr[1];
-    while (*tmp_ptr == ' ' || *tmp_ptr == '\r' ||
-      *tmp_ptr == '\n' || *tmp_ptr == '\t')
-      tmp_ptr++;
-
-    if (*tmp_ptr == '\0')
-      continue;
-
-    title_length = 0;
-    start_ptr = tmp_ptr;
-    while (*start_ptr != ' ' && *start_ptr != '\'' &&
-      *start_ptr != '"' && *start_ptr != '\0' &&
-      *start_ptr != '\r' && *start_ptr != '\n' &&
-      *start_ptr != '\t')
-    {
-      title_length++;
-      start_ptr++;
-    }
-
-    switch (title_length)
-    {
-      case 5:
-        MRN_PARAM_STR_LIST("table", index_table, i);
-        break;
-      case 6:
-        push_warning_printf(thd, MRN_SEVERITY_WARNING,
-                            ER_WARN_DEPRECATED_SYNTAX,
-                            ER(ER_WARN_DEPRECATED_SYNTAX),
-                            "parser", "tokenizer");
-        MRN_PARAM_STR_LIST("parser", key_tokenizer, i);
-        break;
-      case 9:
-        MRN_PARAM_STR_LIST("tokenizer", key_tokenizer, i);
-        break;
-      default:
-        break;
-    }
-  }
-#endif
-  if (!share->key_tokenizer[i]) {
-    share->key_tokenizer[i] = mrn_my_strdup(mrn_default_tokenizer, MYF(MY_WME));
-    if (!share->key_tokenizer[i]) {
-      error = HA_ERR_OUT_OF_MEM;
-      goto error;
-    }
-    share->key_tokenizer_length[i] = strlen(share->key_tokenizer[i]);
-  }
-
-  if (param_string)
-    my_free(param_string);
-  DBUG_RETURN(0);
-
-error:
-  if (param_string)
-    my_free(param_string);
-#if MYSQL_VERSION_ID >= 50500
-error_alloc_param_string:
-#endif
-  DBUG_RETURN(error);
-}
-
-int mrn_parse_index_param(MRN_SHARE *share, TABLE *table)
-{
-  int error;
-  MRN_DBUG_ENTER_FUNCTION();
-  for (uint i = 0; i < table->s->keys; i++)
-  {
-    KEY *key_info = &table->s->key_info[i];
-    bool is_wrapper_mode = share->engine != NULL;
-
-    if (is_wrapper_mode) {
-      if (!(key_info->flags & HA_FULLTEXT) && !mrn_is_geo_key(key_info)) {
-        continue;
-      }
-    }
-
-    if ((error = mrn_add_index_param(share, key_info, i)))
-      goto error;
-  }
-  DBUG_RETURN(0);
-
-error:
-  DBUG_RETURN(error);
 }
 
 int mrn_add_column_param(MRN_SHARE *share, Field *field, int i)
@@ -759,21 +660,18 @@ int mrn_free_share_alloc(
 ) {
   uint i;
   MRN_DBUG_ENTER_FUNCTION();
+  if (share->table_flags)
+    my_free(share->table_flags);
   if (share->engine)
     my_free(share->engine);
+  if (share->tokenizer)
+    my_free(share->tokenizer);
   if (share->default_tokenizer)
     my_free(share->default_tokenizer);
   if (share->normalizer)
     my_free(share->normalizer);
   if (share->token_filters)
     my_free(share->token_filters);
-  for (i = 0; i < share->table_share->keys; i++)
-  {
-    if (share->index_table && share->index_table[i])
-      my_free(share->index_table[i]);
-    if (share->key_tokenizer[i])
-      my_free(share->key_tokenizer[i]);
-  }
   for (i = 0; i < share->table_share->fields; i++)
   {
     if (share->col_flags && share->col_flags[i])
@@ -788,8 +686,12 @@ void mrn_free_long_term_share(MRN_LONG_TERM_SHARE *long_term_share)
 {
   MRN_DBUG_ENTER_FUNCTION();
   {
-    mrn::Lock lock(&mrn_long_term_share_mutex);
-    my_hash_delete(&mrn_long_term_share, (uchar*) long_term_share);
+    mrn::Lock lock(&mrn_long_term_shares_mutex);
+    grn_hash_delete(&mrn_ctx,
+                    mrn_long_term_shares,
+                    long_term_share->table_name,
+                    long_term_share->table_name_length,
+                    NULL);
   }
   mysql_mutex_destroy(&long_term_share->auto_inc_mutex);
   my_free(long_term_share);
@@ -800,15 +702,24 @@ MRN_LONG_TERM_SHARE *mrn_get_long_term_share(const char *table_name,
                                              uint table_name_length,
                                              int *error)
 {
-  MRN_LONG_TERM_SHARE *long_term_share;
+  MRN_LONG_TERM_SHARE *long_term_share = NULL;
   char *tmp_name;
   MRN_DBUG_ENTER_FUNCTION();
   DBUG_PRINT("info", ("mroonga: table_name=%s", table_name));
-  mrn::Lock lock(&mrn_long_term_share_mutex);
-  if (!(long_term_share = (MRN_LONG_TERM_SHARE*)
-    my_hash_search(&mrn_long_term_share, (uchar*) table_name,
-                   table_name_length)))
+  mrn::Lock lock(&mrn_long_term_shares_mutex);
   {
+    void *long_term_share_address;
+    if (grn_hash_get(&mrn_ctx,
+                     mrn_long_term_shares,
+                     table_name,
+                     table_name_length,
+                     &long_term_share_address) != GRN_ID_NIL) {
+      grn_memcpy(&long_term_share,
+                 long_term_share_address,
+                 sizeof(long_term_share));
+    }
+  }
+  if (!long_term_share) {
     if (!(long_term_share = (MRN_LONG_TERM_SHARE *)
       mrn_my_multi_malloc(MYF(MY_WME | MY_ZEROFILL),
         &long_term_share, sizeof(*long_term_share),
@@ -820,7 +731,7 @@ MRN_LONG_TERM_SHARE *mrn_get_long_term_share(const char *table_name,
     }
     long_term_share->table_name = tmp_name;
     long_term_share->table_name_length = table_name_length;
-    memcpy(long_term_share->table_name, table_name, table_name_length);
+    grn_memcpy(long_term_share->table_name, table_name, table_name_length);
     if (mysql_mutex_init(mrn_long_term_share_auto_inc_mutex_key,
                          &long_term_share->auto_inc_mutex,
                          MY_MUTEX_INIT_FAST) != 0)
@@ -828,10 +739,20 @@ MRN_LONG_TERM_SHARE *mrn_get_long_term_share(const char *table_name,
       *error = HA_ERR_OUT_OF_MEM;
       goto error_init_auto_inc_mutex;
     }
-    if (my_hash_insert(&mrn_long_term_share, (uchar*) long_term_share))
     {
-      *error = HA_ERR_OUT_OF_MEM;
-      goto error_hash_insert;
+      void *long_term_share_address;
+      if (grn_hash_add(&mrn_ctx,
+                       mrn_long_term_shares,
+                       long_term_share->table_name,
+                       long_term_share->table_name_length,
+                       &long_term_share_address,
+                       NULL) == GRN_ID_NIL) {
+        *error = HA_ERR_OUT_OF_MEM;
+        goto error_hash_insert;
+      }
+      grn_memcpy(long_term_share_address,
+                 &long_term_share,
+                 sizeof(long_term_share));
     }
   }
   DBUG_RETURN(long_term_share);
@@ -846,26 +767,30 @@ error_alloc_long_term_share:
 
 MRN_SHARE *mrn_get_share(const char *table_name, TABLE *table, int *error)
 {
-  MRN_SHARE *share;
-  char *tmp_name, **index_table, **key_tokenizer, **col_flags, **col_type;
-  uint length, *wrap_key_nr, *index_table_length;
-  uint *key_tokenizer_length, *col_flags_length, *col_type_length, i, j;
+  MRN_SHARE *share = NULL;
+  char *tmp_name, **col_flags, **col_type;
+  uint length, *wrap_key_nr;
+  uint *col_flags_length, *col_type_length, i, j;
   KEY *wrap_key_info;
   TABLE_SHARE *wrap_table_share;
   MRN_DBUG_ENTER_FUNCTION();
   length = (uint) strlen(table_name);
   mrn::Lock lock(&mrn_open_tables_mutex);
-  if (!(share = (MRN_SHARE*) my_hash_search(&mrn_open_tables,
-    (uchar*) table_name, length)))
   {
+    void *share_address = NULL;
+    if (grn_hash_get(&mrn_ctx,
+                     mrn_open_tables,
+                     table_name,
+                     length,
+                     &share_address) != GRN_ID_NIL) {
+      grn_memcpy(&share, share_address, sizeof(share));
+    }
+  }
+  if (!share) {
     if (!(share = (MRN_SHARE *)
       mrn_my_multi_malloc(MYF(MY_WME | MY_ZEROFILL),
         &share, sizeof(*share),
         &tmp_name, length + 1,
-        &index_table, sizeof(char *) * table->s->keys,
-        &index_table_length, sizeof(uint) * table->s->keys,
-        &key_tokenizer, sizeof(char *) * table->s->keys,
-        &key_tokenizer_length, sizeof(uint) * table->s->keys,
         &col_flags, sizeof(char *) * table->s->fields,
         &col_flags_length, sizeof(uint) * table->s->fields,
         &col_type, sizeof(char *) * table->s->fields,
@@ -881,10 +806,6 @@ MRN_SHARE *mrn_get_share(const char *table_name, TABLE *table, int *error)
     share->use_count = 0;
     share->table_name_length = length;
     share->table_name = tmp_name;
-    share->index_table = index_table;
-    share->index_table_length = index_table_length;
-    share->key_tokenizer = key_tokenizer;
-    share->key_tokenizer_length = key_tokenizer_length;
     share->col_flags = col_flags;
     share->col_flags_length = col_flags_length;
     share->col_type = col_type;
@@ -894,8 +815,7 @@ MRN_SHARE *mrn_get_share(const char *table_name, TABLE *table, int *error)
 
     if (
       (*error = mrn_parse_table_param(share, table)) ||
-      (*error = mrn_parse_column_param(share, table)) ||
-      (*error = mrn_parse_index_param(share, table))
+      (*error = mrn_parse_column_param(share, table))
     )
       goto error_parse_table_param;
 
@@ -908,8 +828,8 @@ MRN_SHARE *mrn_get_share(const char *table_name, TABLE *table, int *error)
           !mrn_is_geo_key(&table->s->key_info[i]))
         {
           wrap_key_nr[i] = j;
-          memcpy(&wrap_key_info[j], &table->s->key_info[i],
-                 sizeof(*wrap_key_info));
+          grn_memcpy(&wrap_key_info[j], &table->s->key_info[i],
+                     sizeof(*wrap_key_info));
           j++;
         } else {
           wrap_key_nr[i] = MAX_KEY;
@@ -932,8 +852,10 @@ MRN_SHARE *mrn_get_share(const char *table_name, TABLE *table, int *error)
         share->wrap_key_info = NULL;
         share->wrap_primary_key = MAX_KEY;
       }
-      *wrap_table_share= *table->s;
-      mrn_init_sql_alloc(current_thd, &(wrap_table_share->mem_root));
+      grn_memcpy(wrap_table_share, table->s, sizeof(*wrap_table_share));
+      mrn_init_sql_alloc(current_thd,
+                         "mroonga::wrap-table-share",
+                         &(wrap_table_share->mem_root));
       wrap_table_share->keys = share->wrap_keys;
       wrap_table_share->key_info = share->wrap_key_info;
       wrap_table_share->primary_key = share->wrap_primary_key;
@@ -971,10 +893,18 @@ MRN_SHARE *mrn_get_share(const char *table_name, TABLE *table, int *error)
     {
       goto error_get_long_term_share;
     }
-    if (my_hash_insert(&mrn_open_tables, (uchar*) share))
     {
-      *error = HA_ERR_OUT_OF_MEM;
-      goto error_hash_insert;
+      void *share_address;
+      if (grn_hash_add(&mrn_ctx,
+                       mrn_open_tables,
+                       share->table_name,
+                       share->table_name_length,
+                       &share_address,
+                       NULL) == GRN_ID_NIL) {
+        *error = HA_ERR_OUT_OF_MEM;
+        goto error_hash_insert;
+      }
+      grn_memcpy(share_address, &share, sizeof(share));
     }
   }
   share->use_count++;
@@ -997,7 +927,11 @@ int mrn_free_share(MRN_SHARE *share)
   mrn::Lock lock(&mrn_open_tables_mutex);
   if (!--share->use_count)
   {
-    my_hash_delete(&mrn_open_tables, (uchar*) share);
+    grn_hash_delete(&mrn_ctx,
+                    mrn_open_tables,
+                    share->table_name,
+                    share->table_name_length,
+                    NULL);
     if (share->wrapper_mode)
       plugin_unlock(NULL, share->plugin);
     mrn_free_share_alloc(share);
@@ -1008,7 +942,7 @@ int mrn_free_share(MRN_SHARE *share)
       mysql_mutex_destroy(&(share->wrap_table_share->LOCK_share));
 #endif
       mysql_mutex_destroy(&(share->wrap_table_share->LOCK_ha_data));
-      free_root(&(share->wrap_table_share->mem_root), MYF(0));
+      MRN_FREE_ROOT(&(share->wrap_table_share->mem_root));
     }
     my_free(share);
   }
@@ -1030,15 +964,27 @@ TABLE_SHARE *mrn_get_table_share(TABLE_LIST *table_list, int *error)
   key_length = get_table_def_key(table_list, &key);
 #  else
   char key[MAX_DBKEY_LENGTH];
-  key_length = create_table_def_key(thd, key, table_list, FALSE);
+  key_length = create_table_def_key(thd, key, table_list, false);
 #  endif
 #  ifdef MRN_HAVE_TABLE_DEF_CACHE
+#    ifdef MRN_TABLE_DEF_CACHE_TYPE_IS_MAP
+  share = get_table_share(thd,
+                          table_list->db,
+                          table_list->table_name,
+                          key,
+                          key_length,
+                          false);
+#    else
   my_hash_value_type hash_value;
   hash_value = my_calc_hash(mrn_table_def_cache, (uchar*) key, key_length);
   share = get_table_share(thd, table_list, key, key_length, 0, error,
                           hash_value);
+#    endif
 #  elif defined(MRN_HAVE_TDC_ACQUIRE_SHARE)
-  share = tdc_acquire_share(thd, table_list, GTS_TABLE);
+  share = tdc_acquire_share(thd, table_list->db, table_list->table_name, key,
+                            key_length,
+                            table_list->mdl_request.key.tc_hash_value(),
+                            GTS_TABLE, NULL);
 #  else
   share = get_table_share(thd, table_list, key, key_length, 0, error);
 #  endif
@@ -1046,7 +992,11 @@ TABLE_SHARE *mrn_get_table_share(TABLE_LIST *table_list, int *error)
   DBUG_RETURN(share);
 }
 
-TABLE_SHARE *mrn_create_tmp_table_share(TABLE_LIST *table_list, const char *path,
+TABLE_SHARE *mrn_create_tmp_table_share(TABLE_LIST *table_list,
+                                        const char *path,
+#ifdef MRN_OPEN_TABLE_DEF_USE_TABLE_DEFINITION
+                                        const dd::Table *table_def,
+#endif
                                         int *error)
 {
   uint key_length;
@@ -1059,14 +1009,9 @@ TABLE_SHARE *mrn_create_tmp_table_share(TABLE_LIST *table_list, const char *path
   key_length = get_table_def_key(table_list, &key);
 #else
   char key[MAX_DBKEY_LENGTH];
-  key_length = create_table_def_key(thd, key, table_list, FALSE);
+  key_length = create_table_def_key(thd, key, table_list, false);
 #endif
-#if MYSQL_VERSION_ID >= 100002 && defined(MRN_MARIADB_P)
-  share = alloc_table_share(table_list->db.str, table_list->table_name.str, key,
-                            key_length);
-#else
-  share = alloc_table_share(table_list, key, key_length);
-#endif
+  share = mrn_alloc_table_share(table_list, key, key_length);
   if (!share)
   {
     *error = ER_CANT_OPEN_FILE;
@@ -1077,10 +1022,19 @@ TABLE_SHARE *mrn_create_tmp_table_share(TABLE_LIST *table_list, const char *path
   share->path.length = strlen(share->path.str);
   share->normalized_path.str = mrn_my_strdup(path, MYF(MY_WME));
   share->normalized_path.length = strlen(share->normalized_path.str);
-  if (open_table_def(thd, share, GTS_TABLE))
-  {
+  int open_error = 1;
+#ifdef MRN_OPEN_TABLE_DEF_USE_TABLE_DEFINITION
+  if (table_def) {
+    open_error = open_table_def(thd, share, *table_def);
+  }
+#else
+  open_error = open_table_def(thd, share, GTS_TABLE);
+#endif
+  if (open_error != 0) {
+    char *normalized_path = const_cast<char *>(share->normalized_path.str);
+    free_table_share(share);
+    my_free(normalized_path);
     *error = ER_CANT_OPEN_FILE;
-    mrn_free_tmp_table_share(share);
     DBUG_RETURN(NULL);
   }
   DBUG_RETURN(share);
@@ -1089,9 +1043,10 @@ TABLE_SHARE *mrn_create_tmp_table_share(TABLE_LIST *table_list, const char *path
 void mrn_free_tmp_table_share(TABLE_SHARE *tmp_table_share)
 {
   MRN_DBUG_ENTER_FUNCTION();
-  const char *normalized_path = tmp_table_share->normalized_path.str;
+  char *normalized_path =
+    const_cast<char *>(tmp_table_share->normalized_path.str);
   free_table_share(tmp_table_share);
-  my_free((char*) normalized_path);
+  my_free(normalized_path);
   DBUG_VOID_RETURN;
 }
 
@@ -1115,8 +1070,8 @@ KEY *mrn_create_key_info_for_table(MRN_SHARE *share, TABLE *table, int *error)
       j = wrap_key_nr[i];
       if (j < MAX_KEY)
       {
-        memcpy(&wrap_key_info[j], &table->key_info[i],
-               sizeof(*wrap_key_info));
+        grn_memcpy(&wrap_key_info[j], &table->key_info[i],
+                   sizeof(*wrap_key_info));
       }
     }
   } else
@@ -1132,7 +1087,7 @@ void mrn_set_bitmap_by_key(MY_BITMAP *map, KEY *key_info)
   for (i = 0; i < KEY_N_KEY_PARTS(key_info); i++)
   {
     Field *field = key_info->key_part[i].field;
-    bitmap_set_bit(map, field->field_index);
+    bitmap_set_bit(map, MRN_FIELD_FIELD_INDEX(field));
   }
   DBUG_VOID_RETURN;
 }
@@ -1141,20 +1096,25 @@ st_mrn_slot_data *mrn_get_slot_data(THD *thd, bool can_create)
 {
   MRN_DBUG_ENTER_FUNCTION();
   st_mrn_slot_data *slot_data =
-    (st_mrn_slot_data*) thd_get_ha_data(thd, mrn_hton_ptr);
+    static_cast<st_mrn_slot_data *>(thd_get_ha_data(thd, mrn_hton_ptr));
   if (slot_data == NULL) {
-    slot_data = (st_mrn_slot_data*) malloc(sizeof(st_mrn_slot_data));
+    slot_data =
+      static_cast<st_mrn_slot_data *>(malloc(sizeof(st_mrn_slot_data)));
     slot_data->last_insert_record_id = GRN_ID_NIL;
     slot_data->first_wrap_hton = NULL;
     slot_data->alter_create_info = NULL;
     slot_data->disable_keys_create_info = NULL;
     slot_data->alter_connect_string = NULL;
     slot_data->alter_comment = NULL;
-    thd_set_ha_data(thd, mrn_hton_ptr, slot_data);
+    mrn_thd_set_ha_data(thd, mrn_hton_ptr, slot_data);
     {
       mrn::Lock lock(&mrn_allocated_thds_mutex);
-      if (my_hash_insert(&mrn_allocated_thds, (uchar*) thd))
-      {
+      if (grn_hash_add(&mrn_ctx,
+                       mrn_allocated_thds,
+                       &thd,
+                       sizeof(thd),
+                       NULL,
+                       NULL) == GRN_ID_NIL) {
         free(slot_data);
         DBUG_RETURN(NULL);
       }
@@ -1166,7 +1126,7 @@ st_mrn_slot_data *mrn_get_slot_data(THD *thd, bool can_create)
 void mrn_clear_slot_data(THD *thd)
 {
   MRN_DBUG_ENTER_FUNCTION();
-  st_mrn_slot_data *slot_data = mrn_get_slot_data(thd, FALSE);
+  st_mrn_slot_data *slot_data = mrn_get_slot_data(thd, false);
   if (slot_data) {
     if (slot_data->first_wrap_hton) {
       st_mrn_wrap_hton *tmp_wrap_hton;

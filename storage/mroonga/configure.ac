@@ -3,23 +3,23 @@ AC_PREREQ(2.59)
 m4_define([mrn_version_major],  m4_include(version_major))
 m4_define([mrn_version_minor],  m4_include(version_minor))
 m4_define([mrn_version_micro],  m4_include(version_micro))
-m4_define([mrn_version],        m4_include(version))
+m4_define([mrn_version_full],   m4_include(version_full))
 m4_define([mrn_version_in_hex], m4_include(version_in_hex))
 m4_define([mrn_plugin_version], m4_include(plugin_version))
 
-AC_INIT([mroonga], [mrn_version], [groonga-talk@lists.sourceforge.net])
+AC_INIT([mroonga], [mrn_version_full], [groonga-talk@lists.sourceforge.net])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_HEADERS([config.h])
 
 AM_INIT_AUTOMAKE([tar-pax foreign subdir-objects])
 
-MRN_VERSION=mrn_version
+MRN_VERSION_FULL=mrn_version_full
 MRN_VERSION_MAJOR=mrn_version_major
 MRN_VERSION_MINOR=mrn_version_minor
 MRN_VERSION_MICRO=mrn_version_micro
 MRN_VERSION_IN_HEX=mrn_version_in_hex
 MRN_PLUGIN_VERSION=mrn_plugin_version
-AC_SUBST([MRN_VERSION])
+AC_SUBST([MRN_VERSION_FULL])
 AC_SUBST([MRN_VERSION_MAJOR])
 AC_SUBST([MRN_VERSION_MINOR])
 AC_SUBST([MRN_VERSION_MICRO])
@@ -84,6 +84,7 @@ if test "$GCC" = "yes"; then
   # REMOVEME: workaround for MySQL/MariaDB 5.5.22 :<
   # They use deprecated MYSQL::generate_name style in class definition.
   CHECK_BUILD_FLAG([-Wno-deprecated])
+  CHECK_CXXFLAG([-Werror=overloaded-virtual])
 fi
 
 AC_MSG_CHECKING(for the suffix of plugin shared libraries)
@@ -95,14 +96,6 @@ if test -z "$MRN_PLUGIN_SUFFIX"; then
   AC_MSG_ERROR([can't detect plugin suffix])
 fi
 AC_SUBST(MRN_PLUGIN_SUFFIX)
-
-AC_ARG_WITH(libmysqlservices-compat,
-  [AS_HELP_STRING([--with-libmysqlservices-compat],
-                  [Use libmysqlservices compatible library for missing libmysqlservices.a])
-  ],
-  [with_libmysqlservices_compat=$withval],
-  [with_libmysqlservices_compat=no])
-AM_CONDITIONAL([WITH_LIBMYSQLSERVICES_COMPAT], [test "${with_libmysqlservices_compat}" != "no"])
 
 AC_DEFUN([CONFIG_OPTION_MYSQL],[
   AC_MSG_CHECKING([mysql source])
@@ -178,21 +171,41 @@ AC_DEFUN([CONFIG_OPTION_MYSQL],[
     MYSQL_INCLUDES="$MYSQL_INCLUDES -I$ac_mysql_source_dir/sql/auth"
   fi
   MYSQL_INCLUDES="$MYSQL_INCLUDES -I$ac_mysql_source_dir/include"
-  if test -d "$ac_mysql_source_dir/extra/rapidjson"; then
-    mysql_rapidjson_include_dir="$ac_mysql_source_dir/extra/rapidjson/include"
-    MYSQL_INCLUDES="$MYSQL_INCLUDES -I$mysql_rapidjson_include_dir"
+  if test -d "$ac_mysql_source_dir/wsrep-lib"; then
+    mysql_wsrep_include_dir="$ac_mysql_source_dir/wsrep-lib/include"
+    MYSQL_INCLUDES="$MYSQL_INCLUDES -I$mysql_wsrep_include_dir"
+    mysql_wsrep_api_include_dir=$(dirname ${ac_mysql_source_dir}/wsrep-lib/wsrep-API/*/wsrep_api.h)
+    MYSQL_INCLUDES="$MYSQL_INCLUDES -I$mysql_wsrep_api_include_dir"
   fi
   if test -d "$ac_mysql_source_dir/extra/regex"; then
     mysql_regex_include_dir="$ac_mysql_source_dir/extra/regex"
     MYSQL_INCLUDES="$MYSQL_INCLUDES -I$mysql_regex_include_dir"
   else
-    mysql_regex_include_dir="$ac_mysql_source_dir/regex"
+    if test -d "$ac_mysql_source_dir/pcre"; then
+      mysql_regex_include_dir="$ac_mysql_source_dir/pcre"
+    else
+      mysql_regex_include_dir="$ac_mysql_source_dir/regex"
+    fi
     MYSQL_INCLUDES="$MYSQL_INCLUDES -I$mysql_regex_include_dir"
+  fi
+  if test -d "$ac_mysql_source_dir/extra/rapidjson"; then
+    mysql_rapidjson_include_dir="$ac_mysql_source_dir/extra/rapidjson/include"
+    MYSQL_INCLUDES="$MYSQL_INCLUDES -I$mysql_rapidjson_include_dir"
   fi
   if test -d "$ac_mysql_source_dir/libbinlogevents"; then
     MYSQL_INCLUDES="$MYSQL_INCLUDES -I$ac_mysql_build_dir/libbinlogevents/include"
     MYSQL_INCLUDES="$MYSQL_INCLUDES -I$ac_mysql_source_dir/libbinlogevents/export"
     MYSQL_INCLUDES="$MYSQL_INCLUDES -I$ac_mysql_source_dir/libbinlogevents/include"
+  fi
+  if test -d "$ac_mysql_build_dir/extra/protobuf/protobuf-3.11.4"; then
+    mysql_protobuf_include_dir="$ac_mysql_source_dir/extra/protobuf/protobuf-3.11.4/src"
+    MYSQL_INCLUDES="$MYSQL_INCLUDES -I$mysql_protobuf_include_dir"
+  fi
+  if test -d "$ac_mysql_build_dir/extra/zlib"; then
+    mysql_zlib_include_dir="$ac_mysql_source_dir/extra/zlib"
+    MYSQL_INCLUDES="$MYSQL_INCLUDES -I$mysql_zlib_include_dir"
+    mysql_zlib_config_include_dir="$ac_mysql_build_dir/extra/zlib"
+    MYSQL_INCLUDES="$MYSQL_INCLUDES -I$mysql_zlib_config_include_dir"
   fi
   MYSQL_INCLUDES="$MYSQL_INCLUDES -I$ac_mysql_source_dir"
   MYSQL_INCLUDES="$MYSQL_INCLUDES $($ac_mysql_config --include)"
@@ -203,42 +216,88 @@ AC_DEFUN([CONFIG_OPTION_MYSQL],[
 
   MYSQL_MAJOR_MINOR_VERSION=["$(echo $MYSQL_VERSION | sed -e 's/\([0-9]*\)\.\([0-9]*\)\.\([0-9]*[a-z]*\)[.0-9a-z-]*$/\1.\2/')"]
 
-  MYSQL_CXXFLAGS="-fno-implicit-templates -felide-constructors"
   case "$MYSQL_MAJOR_MINOR_VERSION" in
-  5.7|8.*)
-      :
-      ;;
+  10.*)
+    MYSQL_VARIANT=mariadb
+    ;;
   *)
-      MYSQL_CXXFLAGS="$MYSQL_CXXFLAGS -fno-exceptions -fno-rtti"
-      ;;
+    MYSQL_VARIANT=mysql
+    ;;
   esac
 
-  if test "${with_libmysqlservices_compat}" = "no"; then
-    case "$MYSQL_MAJOR_MINOR_VERSION" in
-    5.1)
-        MYSQL_LIBS=""
-        ;;
-    *)
-        AC_MSG_CHECKING([for libmysqlservices.a directory])
-        pkglibdir="$($ac_mysql_config --variable=pkglibdir)"
-        mysql_build_libservices_dir="${MYSQL_BUILD_DIR}/libservices"
-        if test -f "${mysql_build_libservices_dir}/libmysqlservices.a"; then
-          mysql_services_lib_dir="${mysql_build_libservices_dir}"
-        else
-          if test -f "${pkglibdir}/libmysqlservices.a"; then
-            mysql_services_lib_dir="${pkglibdir}"
-          elif test -f "${pkglibdir}/mysql/libmysqlservices.a"; then
-            mysql_services_lib_dir="${pkglibdir}/mysql"
-          else
-            AC_MSG_ERROR([libmysqlservices.a is not found in <${pkglibdir}/> and <${pkglibdir}/mysql/>])
-          fi
-        fi
-        AC_MSG_RESULT([$mysql_services_lib_dir])
-        MYSQL_LIBS="$MYSQL_LIBS -L\"$mysql_services_lib_dir\" -lmysqlservices"
-        ;;
-    esac
-    AC_SUBST(MYSQL_LIBS)
+  MYSQL_CXXFLAGS="-felide-constructors"
+  case "$MYSQL_MAJOR_MINOR_VERSION" in
+  5.7)
+    m4_ifdef([AX_CXX_COMPILE_STDCXX_11],
+             [AX_CXX_COMPILE_STDCXX_11([ext], [mandatory])],
+             [CHECK_CXXFLAG([-std=gnu++11])])
+    ;;
+  8.*)
+    m4_ifdef([AX_CXX_COMPILE_STDCXX_17],
+             [AX_CXX_COMPILE_STDCXX_17([ext], [mandatory])],
+             [CHECK_CXXFLAG([-std=gnu++17])])
+    ;;
+  10.2|10.3)
+    MYSQL_CXXFLAGS="$MYSQL_CXXFLAGS -fno-rtti"
+    ;;
+  10.*)
+    m4_ifdef([AX_CXX_COMPILE_STDCXX_11],
+             [AX_CXX_COMPILE_STDCXX_11([ext], [mandatory])],
+             [CHECK_CXXFLAG([-std=gnu++11])])
+    ;;
+  *)
+    :
+    ;;
+  esac
+
+  AC_MSG_CHECKING([for libmysqlservices.a directory])
+  pkglibdir="$($ac_mysql_config --variable=pkglibdir)"
+  mysql_build_archive_output_dir="${MYSQL_BUILD_DIR}/archive_output_directory"
+  mysql_build_libservices_dir="${MYSQL_BUILD_DIR}/libservices"
+  if test -f "${mysql_build_archive_output_dir}/libmysqlservices.a"; then
+    mysql_services_lib_dir="${mysql_build_archive_output_dir}"
+  elif test -f "${mysql_build_libservices_dir}/libmysqlservices.a"; then
+    mysql_services_lib_dir="${mysql_build_libservices_dir}"
+  else
+    if test -f "${pkglibdir}/libmysqlservices.a"; then
+      mysql_services_lib_dir="${pkglibdir}"
+    elif test -f "${pkglibdir}/mysql/libmysqlservices.a"; then
+      mysql_services_lib_dir="${pkglibdir}/mysql"
+    else
+      AC_MSG_ERROR([libmysqlservices.a is not found in <${pkglibdir}/> and <${pkglibdir}/mysql/>])
+    fi
   fi
+  AC_MSG_RESULT([$mysql_services_lib_dir])
+  MYSQL_LIBS="$MYSQL_LIBS \"$mysql_services_lib_dir/libmysqlservices.a\""
+
+  case "$MYSQL_MAJOR_MINOR_VERSION" in
+  10.1|10.2|10.3|10.4)
+    :
+    ;;
+  10.*)
+    AC_MSG_CHECKING([for libperfschema.a directory])
+    pkglibdir="$($ac_mysql_config --variable=pkglibdir)"
+    mysql_build_perfschema_dir="${MYSQL_BUILD_DIR}/storage/perfschema"
+    if test -f "${mysql_build_perfschema_dir}/libperfschema.a"; then
+      perfschema_lib_dir="${mysql_build_perfschema_dir}"
+    else
+      if test -f "${pkglibdir}/libperfschema.a"; then
+	perfschema_lib_dir="${pkglibdir}"
+      elif test -f "${pkglibdir}/mysql/libperfschema.a"; then
+	mysql_services_lib_dir="${pkglibdir}/mysql"
+      else
+	AC_MSG_ERROR([libperfschema.a is not found in <${pkglibdir}/> and <${pkglibdir}/mysql/>])
+      fi
+    fi
+    AC_MSG_RESULT([$perfschema_lib_dir])
+    MYSQL_LIBS="$MYSQL_LIBS \"$perfschema_lib_dir/libperfschema.a\""
+    ;;
+  *)
+    :
+    ;;
+  esac
+
+  AC_SUBST(MYSQL_LIBS)
 ])
 
 m4_define([mrn_required_groonga_version], m4_include(required_groonga_version))
@@ -272,6 +331,20 @@ AC_DEFUN([CONFIG_OPTION_GROONGA_NORMALIZER_MYSQL], [
   fi
 ])
 
+m4_define([mrn_package_groonga_version], m4_include(package_groonga_version))
+PACKAGE_GROONGA_VERSION=mrn_package_groonga_version
+AC_SUBST(PACKAGE_GROONGA_VERSION)
+m4_define([mrn_package_mariadb_version], m4_include(package_mariadb_version))
+PACKAGE_MARIADB_VERSION=mrn_package_mariadb_version
+AC_SUBST(PACKAGE_MARIADB_VERSION)
+m4_define([mrn_package_groonga_normalizer_mysql_version], m4_include(package_groonga_normalizer_mysql_version))
+PACKAGE_GROONGA_NORMALIZER_MYSQL_VERSION=mrn_package_groonga_normalizer_mysql_version
+AC_SUBST(PACKAGE_GROONGA_NORMALIZER_MYSQL_VERSION)
+
+CONFIG_OPTION_MYSQL
+CONFIG_OPTION_GROONGA
+CONFIG_OPTION_GROONGA_NORMALIZER_MYSQL
+
 AC_ARG_WITH(debug,
     [dnl
 AS_HELP_STRING([--with-debug],
@@ -284,18 +357,25 @@ AS_HELP_STRING([--with-debug=full],
 if test "$with_debug" = "yes"
 then
   # Medium debug.
-  AC_DEFINE([DBUG_ON], [1], [Use libdbug])
+  AC_DEFINE([DBUG_ON], [1], [Enable debug])
+  if test "${MYSQL_VARIANT}" = "mariadb"; then
+    AC_DEFINE([DBUG_TRACE], [1], [Enable debug trace])
+  fi
   CFLAGS="$DEBUG_CFLAGS $DEBUG_OPTIMIZE_CC -DSAFE_MUTEX $CFLAGS -O0 -g3"
   CXXFLAGS="$DEBUG_CXXFLAGS $DEBUG_OPTIMIZE_CXX -DSAFE_MUTEX $CXXFLAGS -O0 -g3"
 elif test "$with_debug" = "full"
 then
   # Full debug. Very slow in some cases
-  AC_DEFINE([DBUG_ON], [1], [Use libdbug])
+  AC_DEFINE([DBUG_ON], [1], [Enable debug])
+  if test "${MYSQL_VARIANT}" = "mariadb"; then
+    AC_DEFINE([DBUG_TRACE], [1], [Enable debug trace])
+  fi
   CFLAGS="$DEBUG_CFLAGS -DSAFE_MUTEX -DSAFEMALLOC $CFLAGS -O0 -g3"
   CXXFLAGS="$DEBUG_CXXFLAGS -DSAFE_MUTEX -DSAFEMALLOC $CXXFLAGS -O0 -g3"
 else
   # Optimized version. No debug
-  AC_DEFINE([DBUG_OFF], [1], [Don't use libdbug])
+  AC_DEFINE([NDEBUG], [1], [Disable debug])
+  AC_DEFINE([DBUG_OFF], [1], [Disable debug])
   CFLAGS="$OPTIMIZE_CFLAGS $CFLAGS"
   CXXFLAGS="$OPTIMIZE_CXXFLAGS $CXXFLAGS"
 fi
@@ -308,10 +388,6 @@ if test "$with_valgrind" != "no"; then
   CFLAGS="-DHAVE_valgrind $CFLAGS"
   CXXFLAGS="-DHAVE_valgrind $CXXFLAGS"
 fi
-
-CONFIG_OPTION_MYSQL
-CONFIG_OPTION_GROONGA
-CONFIG_OPTION_GROONGA_NORMALIZER_MYSQL
 
 AC_ARG_WITH(default_parser,
     [AS_HELP_STRING([--with-default-parser=PARSER],
@@ -419,6 +495,20 @@ case "$CUTTER_SOURCE_PATH" in
 esac
 AC_SUBST(CUTTER_SOURCE_PATH)
 
+# For updating apt/yum repositories
+AC_ARG_WITH(groonga-source-path,
+            [AS_HELP_STRING([--with-groonga-source-path=PATH],
+            [specify Groonga source path for Mroonga's release manager.])],
+            [GROONGA_SOURCE_PATH="$withval"])
+case "$GROONGA_SOURCE_PATH" in
+  ""|/*)
+    : # do nothing
+    ;;
+  *)
+    GROONGA_SOURCE_PATH="\$(top_builddir)/${GROONGA_SOURCE_PATH}"
+    ;;
+esac
+AC_SUBST(GROONGA_SOURCE_PATH)
 
 # Document
 AC_MSG_CHECKING([whether enable document])
@@ -441,12 +531,6 @@ if test x"$enable_document" != x"no"; then
   if test x"$enable_document" = x"yes"; then
     AC_PATH_PROG(SPHINX_BUILD, sphinx-build, [])
     if test -n "$SPHINX_BUILD"; then
-      sphinx_build_version=`"$SPHINX_BUILD" --version`
-      if ! echo "$sphinx_build_version" | grep -q ' 1\.[[2-6]]'; then
-	AC_MSG_ERROR([
-sphinx-build is old: $sphinx_build_version
-Sphinx 1.2 or later is required.])
-      fi
       document_available=yes
       document_buildable=yes
     else
@@ -501,12 +585,7 @@ AC_CONFIG_FILES([
   test/unit/Makefile
   mysql-test/Makefile
   packages/Makefile
-  packages/rpm/Makefile
-  packages/rpm/centos/Makefile
-  packages/yum/Makefile
-  packages/apt/Makefile
   packages/source/Makefile
-  packages/ubuntu/Makefile
   packages/windows/Makefile
   tools/Makefile
   doc/Makefile
@@ -516,25 +595,13 @@ AC_CONFIG_FILES([
   doc/locale/ja/Makefile
   doc/locale/ja/LC_MESSAGES/Makefile
   data/Makefile
+  data/deb/Makefile
+  data/rpm/Makefile
 ])
 AC_OUTPUT([
   config.sh
   mrn_version.h
   mysql-test/mroonga/storage/information_schema/r/plugins.result
   mysql-test/mroonga/storage/variable/r/version.result
-  packages/debian-5.5/control
-  packages/debian-5.6/control
-  packages/debian-5.7/control
-  packages/debian-mariadb-10.0/control
-  packages/apt/env.sh
-  packages/rpm/centos/mysql55-mroonga.spec
-  packages/rpm/centos/mysql56-community-mroonga.spec
-  packages/rpm/centos/mysql57-community-mroonga.spec
-  packages/rpm/centos/mariadb-mroonga.spec
-  packages/rpm/centos/mariadb-10.1-mroonga.spec
-  packages/rpm/centos/mariadb-10.2-mroonga.spec
-  packages/rpm/centos/percona-server-56-mroonga.spec
-  packages/rpm/centos/percona-server-57-mroonga.spec
-  packages/yum/env.sh
   data/install.sql
 ])

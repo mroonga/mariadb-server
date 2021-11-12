@@ -16,7 +16,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <mrn_mysql.h>
@@ -24,6 +24,7 @@
 #include "mrn_path_mapper.hpp"
 
 #include <string.h>
+#include <cstring>
 
 namespace mrn {
   char *PathMapper::default_path_prefix = NULL;
@@ -61,7 +62,7 @@ namespace mrn {
 
       int i = 2, j = strlen(db_path_), len;
       len = strlen(original_mysql_path_);
-      while (original_mysql_path_[i] != FN_LIBCHAR && i < len) {
+      while (i < len && original_mysql_path_[i] != FN_LIBCHAR) {
         db_path_[j++] = original_mysql_path_[i++];
       }
       db_path_[j] = '\0';
@@ -77,7 +78,7 @@ namespace mrn {
           strcpy(db_path_, path_prefix_);
           j = strlen(db_path_);
         } else {
-          memcpy(db_path_, mysql_data_home_path_, mysql_data_home_len);
+          grn_memcpy(db_path_, mysql_data_home_path_, mysql_data_home_len);
           if (path_prefix_) {
             if (path_prefix_[0] == FN_CURLIB &&
                 path_prefix_[1] == FN_LIBCHAR) {
@@ -91,11 +92,11 @@ namespace mrn {
           }
         }
 
-        while (original_mysql_path_[i] != FN_LIBCHAR && i < len) {
+        while (i < len && original_mysql_path_[i] != FN_LIBCHAR) {
           db_path_[j++] = original_mysql_path_[i++];
         }
         if (i == len) {
-          memcpy(db_path_, original_mysql_path_, len);
+          grn_memcpy(db_path_, original_mysql_path_, len);
         } else {
           db_path_[j] = '\0';
         }
@@ -124,7 +125,7 @@ namespace mrn {
         original_mysql_path_[1] == FN_LIBCHAR) {
       int i = 2, j = 0, len;
       len = strlen(original_mysql_path_);
-      while (original_mysql_path_[i] != FN_LIBCHAR && i < len) {
+      while (i < len && original_mysql_path_[i] != FN_LIBCHAR) {
         db_name_[j++] = original_mysql_path_[i++];
       }
       db_name_[j] = '\0';
@@ -140,7 +141,7 @@ namespace mrn {
           db_name_[j++] = original_mysql_path_[i++];
         }
         if (i == len) {
-          memcpy(db_name_, original_mysql_path_, len);
+          grn_memcpy(db_name_, original_mysql_path_, len);
         } else {
           db_name_[j] = '\0';
         }

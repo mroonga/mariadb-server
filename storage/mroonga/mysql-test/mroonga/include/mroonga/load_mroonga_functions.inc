@@ -12,12 +12,13 @@
 #
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
 --source ../../include/mroonga/check_ha_mroonga_so.inc
 
 --disable_query_log
 eval CREATE FUNCTION last_insert_grn_id RETURNS INTEGER SONAME $ha_mroonga_so;
+eval CREATE FUNCTION mroonga_last_insert_grn_id RETURNS INTEGER SONAME $ha_mroonga_so;
 eval CREATE FUNCTION mroonga_snippet RETURNS STRING SONAME $ha_mroonga_so;
 eval CREATE FUNCTION mroonga_command RETURNS STRING SONAME $ha_mroonga_so;
 eval CREATE FUNCTION mroonga_escape RETURNS STRING SONAME $ha_mroonga_so;

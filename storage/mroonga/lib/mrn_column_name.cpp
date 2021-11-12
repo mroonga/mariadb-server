@@ -1,6 +1,6 @@
 /* -*- c-basic-offset: 2 -*- */
 /*
-  Copyright(C) 2016 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2016-2017 Kouhei Sutou <kou@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -14,7 +14,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <mrn_mysql.h>
@@ -31,13 +31,16 @@
 
 namespace mrn {
   ColumnName::ColumnName(const char *mysql_name)
-    : mysql_name_(mysql_name) {
-    encode(mysql_name, strlen(mysql_name));
+    : mysql_name_(mysql_name),
+      mysql_name_length_(strlen(mysql_name)) {
+    encode();
   }
 
-  ColumnName::ColumnName(const LEX_CSTRING &mysql_name)
-    : mysql_name_(mysql_name.str) {
-    encode(mysql_name.str, mysql_name.length);
+  ColumnName::ColumnName(const char *mysql_name,
+                         size_t mysql_name_length)
+    : mysql_name_(mysql_name),
+      mysql_name_length_(mysql_name_length) {
+    encode();
   }
 
   const char *ColumnName::mysql_name() {
@@ -52,13 +55,12 @@ namespace mrn {
     return length_;
   }
 
-  void ColumnName::encode(const char *mysql_name,
-                          size_t mysql_name_length) {
+  void ColumnName::encode() {
     MRN_DBUG_ENTER_METHOD();
     uint errors;
     length_ = mrn_strconvert(system_charset_info,
-                             mysql_name,
-                             mysql_name_length,
+                             mysql_name_,
+                             mysql_name_length_,
                              &my_charset_filename,
                              name_,
                              MRN_MAX_PATH_SIZE,

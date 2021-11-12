@@ -16,7 +16,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <mrn_mysql.h>
@@ -27,17 +27,32 @@
 
 MRN_BEGIN_DECLS
 
-MRN_API my_bool last_insert_grn_id_init(UDF_INIT *init, UDF_ARGS *args, char *message)
+static
+mrn_bool init_general(UDF_INIT *init,
+                     UDF_ARGS *args,
+                     char *message,
+                     const char *context)
 {
   if (args->arg_count != 0) {
-    strcpy(message, "last_insert_grn_id must not have arguments");
+    snprintf(message, MYSQL_ERRMSG_SIZE,
+             "%s must not have arguments", context);
     return 1;
   }
   init->maybe_null = 0;
   return 0;
 }
 
-MRN_API longlong last_insert_grn_id(UDF_INIT *init, UDF_ARGS *args, char *is_null, char *error)
+MRN_API mrn_bool mroonga_last_insert_grn_id_init(UDF_INIT *init,
+                                                UDF_ARGS *args,
+                                                char *message)
+{
+  return init_general(init, args, message, "mroonga_last_insert_grn_id");
+}
+
+MRN_API longlong mroonga_last_insert_grn_id(UDF_INIT *init,
+                                            UDF_ARGS *args,
+                                            char *is_null,
+                                            char *error)
 {
   THD *thd = current_thd;
   st_mrn_slot_data *slot_data = mrn_get_slot_data(thd, false);
@@ -48,8 +63,30 @@ MRN_API longlong last_insert_grn_id(UDF_INIT *init, UDF_ARGS *args, char *is_nul
   return last_insert_record_id;
 }
 
+MRN_API void mroonga_last_insert_grn_id_deinit(UDF_INIT *init)
+{
+}
+
+/* Deprecated. Use mroonga_last_insert_grn_id instead. */
+
+MRN_API mrn_bool last_insert_grn_id_init(UDF_INIT *init,
+                                        UDF_ARGS *args,
+                                        char *message)
+{
+  return init_general(init, args, message, "last_insert_grn_id");
+}
+
+MRN_API longlong last_insert_grn_id(UDF_INIT *init,
+                                    UDF_ARGS *args,
+                                    char *is_null,
+                                    char *error)
+{
+  return mroonga_last_insert_grn_id(init, args, is_null, error);
+}
+
 MRN_API void last_insert_grn_id_deinit(UDF_INIT *init)
 {
+  mroonga_last_insert_grn_id_deinit(init);
 }
 
 MRN_END_DECLS

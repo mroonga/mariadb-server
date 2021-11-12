@@ -1,6 +1,6 @@
 /* -*- c-basic-offset: 2 -*- */
 /*
-  Copyright(C) 2014 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2014-2021  Sutou Kouhei <kou@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -14,7 +14,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <string.h>
@@ -45,6 +45,13 @@ namespace mrn {
     if (obj_) {
       grn_obj_unlink(ctx_, obj_);
     }
+  }
+
+  void SmartGrnObj::reset(grn_obj *obj) {
+    if (obj_) {
+      grn_obj_unlink(ctx_, obj_);
+    }
+    obj_ = obj;
   }
 
   grn_obj *SmartGrnObj::get() {

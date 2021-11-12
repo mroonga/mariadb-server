@@ -14,7 +14,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <mrn_mysql.h>
@@ -29,11 +29,14 @@ namespace mrn {
   Database::Database(grn_ctx *ctx, grn_obj *db)
     : ctx_(ctx),
       db_(db),
+      cache_(NULL),
       broken_table_names_(NULL),
       is_broken_(false) {
     Operations operations(ctx_);
     broken_table_names_ = operations.collect_processing_table_names();
     is_broken_ = operations.is_locked();
+    cache_ = grn_cache_open(ctx_);
+    grn_db_set_cache(ctx_, db_, cache_);
   }
 
   Database::~Database(void) {
@@ -47,6 +50,8 @@ namespace mrn {
       broken_table_names_ = NULL;
       grn_obj_close(ctx_, db_);
       db_ = NULL;
+      grn_cache_close(ctx_, cache_);
+      cache_ = NULL;
     }
     DBUG_VOID_RETURN;
   }

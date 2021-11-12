@@ -12,11 +12,11 @@
 #
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
---source include/have_innodb.inc
---source include/not_embedded.inc
---source include/have_perfschema.inc
+--source ../../include/mroonga/have_innodb.inc
+--source ../../include/mroonga/not_embedded.inc
+--source ../../include/mroonga/have_perfschema.inc
 --source ../../include/mroonga/have_mroonga.inc
 
 --disable_warnings
@@ -29,7 +29,7 @@ CREATE TABLE diaries (
   id INT PRIMARY KEY AUTO_INCREMENT,
   content VARCHAR(255),
   FULLTEXT INDEX (content)
-) DEFAULT CHARSET UTF8 COMMENT = 'ENGINE "InnoDB"';
+) DEFAULT CHARSET UTF8MB4 COMMENT = 'ENGINE "InnoDB"';
 SHOW CREATE TABLE diaries;
 
 INSERT INTO diaries (content) VALUES ("Tommorow will be shiny day!");

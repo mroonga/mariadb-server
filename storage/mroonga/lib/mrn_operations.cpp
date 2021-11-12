@@ -14,7 +14,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <mrn_mysql.h>
@@ -319,9 +319,15 @@ namespace mrn {
         }
       } else if (strcmp(GRN_TEXT_VALUE(&text_buffer_), "update") == 0) {
         error = HA_ERR_CRASHED_ON_USAGE;
-        my_message(error,
-                   "mroonga: repair: can't recover from crash while updating",
-                   MYF(0));
+        char error_message[MRN_MESSAGE_BUFFER_SIZE];
+        snprintf(error_message, MRN_MESSAGE_BUFFER_SIZE,
+                 "mroonga: repair: can't recover from crash while updating: "
+                 "[%u]: <%.*s>[%u][%s]",
+                 id,
+                 static_cast<int>(table_name_size), table_name,
+                 record_id,
+                 GRN_TEXT_VALUE(&text_buffer_));
+        my_message(error, error_message, MYF(0));
         break;
       } else {
         error = HA_ERR_CRASHED_ON_USAGE;

@@ -1,8 +1,8 @@
 /* -*- c-basic-offset: 2 -*- */
 /*
-  Copyright(C) 2010 Tetsuro IKEDA
-  Copyright(C) 2010-2013 Kentoku SHIBA
-  Copyright(C) 2011-2015 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2010  Tetsuro IKEDA
+  Copyright(C) 2010-2013  Kentoku SHIBA
+  Copyright(C) 2011-2021  Sutou Kouhei <kou@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -16,7 +16,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <mrn_mysql.h>
@@ -31,6 +31,9 @@
 // for debug
 #define MRN_CLASS_NAME "mrn::DatabaseManager"
 
+#include <sys/types.h>
+#include <sys/stat.h>
+
 #ifdef WIN32
 #  include <direct.h>
 #  define MRN_MKDIR(pathname, mode) _mkdir((pathname))
@@ -39,6 +42,8 @@
 #  include <unistd.h>
 #  define MRN_MKDIR(pathname, mode) mkdir((pathname), (mode))
 #endif
+
+#include <cstring>
 
 extern "C" {
   grn_rc GRN_PLUGIN_IMPL_NAME_TAGGED(init, normalizers_mysql)(grn_ctx *ctx);
@@ -57,7 +62,7 @@ namespace mrn {
       void *db_address;
       GRN_HASH_EACH(ctx_, cache_, id, NULL, 0, &db_address, {
         Database *db;
-        memcpy(&db, db_address, sizeof(grn_obj *));
+        grn_memcpy(&db, db_address, sizeof(db));
         delete db;
       });
       grn_hash_close(ctx_, cache_);
@@ -69,7 +74,7 @@ namespace mrn {
     cache_ = grn_hash_create(ctx_,
                              NULL,
                              GRN_TABLE_MAX_KEY_SIZE,
-                             sizeof(grn_obj *),
+                             sizeof(Database *),
                              GRN_OBJ_KEY_VAR_SIZE);
     if (!cache_) {
       GRN_LOG(ctx_, GRN_LOG_ERROR,
@@ -127,7 +132,7 @@ namespace mrn {
       grn_hash_add(ctx_, cache_,
                    mapper.db_name(), strlen(mapper.db_name()),
                    &db_address, NULL);
-      memcpy(db_address, db, sizeof(Database *));
+      grn_memcpy(db_address, db, sizeof(Database *));
       error = ensure_normalizers_registered((*db)->get());
       if (!error) {
         if ((*db)->is_broken()) {
@@ -146,11 +151,23 @@ namespace mrn {
         }
       }
     } else {
-      memcpy(db, db_address, sizeof(Database *));
+      grn_memcpy(db, db_address, sizeof(Database *));
       grn_ctx_use(ctx_, (*db)->get());
     }
 
     DBUG_RETURN(error);
+  }
+
+  bool DatabaseManager::exist(const char *path) {
+    MRN_DBUG_ENTER_METHOD();
+
+    mrn::PathMapper mapper(path);
+    mrn::Lock lock(mutex_);
+
+    struct stat db_stat;
+    bool exist = (stat(mapper.db_path(), &db_stat) == 0);
+
+    DBUG_RETURN(exist);
   }
 
   void DatabaseManager::close(const char *path) {
@@ -169,7 +186,7 @@ namespace mrn {
     }
 
     Database *db = NULL;
-    memcpy(&db, db_address, sizeof(Database *));
+    grn_memcpy(&db, db_address, sizeof(db));
     grn_ctx_use(ctx_, db->get());
     if (db) {
       delete db;
@@ -200,7 +217,7 @@ namespace mrn {
         db = new Database(ctx_, grn_db);
       }
     } else {
-      memcpy(&db, db_address, sizeof(Database *));
+      grn_memcpy(&db, db_address, sizeof(db));
       grn_ctx_use(ctx_, db->get());
     }
 
@@ -250,7 +267,7 @@ namespace mrn {
       void *db_address;
       Database *db;
       grn_hash_cursor_get_value(ctx_, cursor, &db_address);
-      memcpy(&db, db_address, sizeof(Database *));
+      grn_memcpy(&db, db_address, sizeof(db));
       grn_ctx_use(ctx_, db->get());
       grn_rc rc = grn_hash_cursor_delete(ctx_, cursor, NULL);
       if (rc) {

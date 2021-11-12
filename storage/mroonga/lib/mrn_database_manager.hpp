@@ -1,8 +1,8 @@
 /* -*- c-basic-offset: 2 -*- */
 /*
-  Copyright(C) 2010 Tetsuro IKEDA
-  Copyright(C) 2010-2013 Kentoku SHIBA
-  Copyright(C) 2011-2014 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2010  Tetsuro IKEDA
+  Copyright(C) 2010-2013  Kentoku SHIBA
+  Copyright(C) 2011-2021  Sutou Kouhei <kou@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -16,7 +16,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #ifndef MRN_DATABASE_MANAGER_HPP_
@@ -32,6 +32,7 @@ namespace mrn {
     DatabaseManager(grn_ctx *ctx, mysql_mutex_t *mutex);
     ~DatabaseManager(void);
     bool init(void);
+    bool exist(const char *path);
     int open(const char *path, Database **db);
     void close(const char *path);
     bool drop(const char *path);

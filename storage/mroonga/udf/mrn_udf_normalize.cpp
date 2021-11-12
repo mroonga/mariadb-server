@@ -1,7 +1,7 @@
 /* -*- c-basic-offset: 2; indent-tabs-mode: nil -*- */
 /*
   Copyright(C) 2015 Naoya Murakami <naoya@createfield.com>
-  Copyright(C) 2017 Kouhei Sutou <kou@clear-code.com>
+  Copyright(C) 2017-2019 Kouhei Sutou <kou@clear-code.com>
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -15,7 +15,7 @@
 
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include <mrn_mysql.h>
@@ -43,14 +43,13 @@ struct st_mrn_normalize_info
   bool use_shared_db;
   grn_obj *normalizer;
   int flags;
-  String result_str;
+  grn_obj result;
 };
 
-MRN_API my_bool mroonga_normalize_init(UDF_INIT *init, UDF_ARGS *args,
+MRN_API mrn_bool mroonga_normalize_init(UDF_INIT *init, UDF_ARGS *args,
                                        char *message)
 {
   st_mrn_normalize_info *info = NULL;
-  String *result_str = NULL;
 
   init->ptr = NULL;
   if (!(1 <= args->arg_count && args->arg_count <= 2)) {
@@ -121,13 +120,12 @@ MRN_API my_bool mroonga_normalize_init(UDF_INIT *init, UDF_ARGS *args,
   }
   info->flags = 0;
 
-  result_str = &(info->result_str);
   mrn::encoding::set_raw(info->ctx, system_charset_info);
-  result_str->set_charset(system_charset_info);
+  GRN_TEXT_INIT(&(info->result), 0);
 
   init->ptr = (char *)info;
 
-  return FALSE;
+  return false;
 
 error:
   if (info) {
@@ -137,7 +135,7 @@ error:
     mrn_context_pool->release(info->ctx);
     my_free(info);
   }
-  return TRUE;
+  return true;
 }
 
 MRN_API char *mroonga_normalize(UDF_INIT *init, UDF_ARGS *args, char *result,
@@ -145,14 +143,13 @@ MRN_API char *mroonga_normalize(UDF_INIT *init, UDF_ARGS *args, char *result,
 {
   st_mrn_normalize_info *info = (st_mrn_normalize_info *)init->ptr;
   grn_ctx *ctx = info->ctx;
-  String *result_str = &(info->result_str);
 
   if (!args->args[0]) {
     *is_null = 1;
     return NULL;
   }
 
-  result_str->length(0);
+  GRN_BULK_REWIND(&(info->result));
   {
     char *target = args->args[0];
     unsigned int target_length = args->lengths[0];
@@ -168,12 +165,7 @@ MRN_API char *mroonga_normalize(UDF_INIT *init, UDF_ARGS *args, char *result,
                               &normalized,
                               &normalized_length_in_bytes,
                               &normalized_n_characters);
-    if (result_str->reserve(normalized_length_in_bytes)) {
-      my_error(ER_OUT_OF_RESOURCES, MYF(0), HA_ERR_OUT_OF_MEM);
-      goto error;
-    }
-    result_str->q_append(normalized, normalized_length_in_bytes);
-    result_str->length(normalized_length_in_bytes);
+    GRN_TEXT_SET(ctx, &(info->result), normalized, normalized_length_in_bytes);
     grn_obj_unlink(ctx, grn_string);
   }
   *is_null = 0;
@@ -183,8 +175,8 @@ MRN_API char *mroonga_normalize(UDF_INIT *init, UDF_ARGS *args, char *result,
     goto error;
   }
 
-  *length = result_str->length();
-  return (char *)result_str->ptr();
+  *length = GRN_TEXT_LEN(&(info->result));
+  return GRN_TEXT_VALUE(&(info->result));
 
 error:
   *is_null = 1;
@@ -197,7 +189,7 @@ MRN_API void mroonga_normalize_deinit(UDF_INIT *init)
   st_mrn_normalize_info *info = (st_mrn_normalize_info *)init->ptr;
 
   if (info) {
-    MRN_STRING_FREE(info->result_str);
+    GRN_OBJ_FIN(info->ctx, &(info->result));
     if (info->normalizer) {
       grn_obj_unlink(info->ctx, info->normalizer);
     }
